@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from app.core.settings import settings
 from app.domain.types import TileState
 from app.services.state_store import state_store
-from app.services.tile_engine import build_tile
+from app.services.tile_engine import refresh_symbol
 
 router = APIRouter()
 
@@ -24,6 +24,5 @@ async def get_symbol_state(symbol: str) -> TileState:
     if cached:
         return cached
 
-    tile = build_tile(symbol.upper())
-    await state_store.set_state(symbol.upper(), tile)
+    tile = await refresh_symbol(symbol.upper())
     return tile

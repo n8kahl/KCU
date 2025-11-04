@@ -9,7 +9,8 @@ from app.api import api_router
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.settings import settings
-from app.services.tile_engine import run_tile_simulator
+from app.services.state_store import state_store
+from app.services.tile_engine import run_tile_pipeline
 from app.ws.manager import ConnectionManager
 
 configure_logging()
@@ -29,12 +30,15 @@ manager = ConnectionManager()
 @app.on_event("startup")
 async def startup_event() -> None:
     asyncio.create_task(manager.heartbeat())
-    asyncio.create_task(run_tile_simulator(manager))
+    asyncio.create_task(run_tile_pipeline(manager))
 
 
 @app.websocket("/ws/stream")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await manager.connect(websocket)
+    current = await state_store.all_states()
+    for tile in current:
+        await websocket.send_json({"type": "tile", "data": tile.model_dump()})
     try:
         while True:
             await websocket.receive_text()

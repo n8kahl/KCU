@@ -4,22 +4,16 @@ import asyncio
 from datetime import datetime, timezone
 
 from app.core.settings import settings
-from app.services import ingest
+from app.services.tile_engine import refresh_symbol
 from app.workers.celery_app import app
 
 
-async def _run_for_watchlist(job):
+async def _refresh_watchlist() -> None:
     for ticker in settings.watchlist:
-        await job(ticker)
+        await refresh_symbol(ticker)
 
 
-@app.task(name="app.workers.tasks.ingest_candles")
-def ingest_candles() -> str:
-    asyncio.run(_run_for_watchlist(ingest.warm_candles))
-    return datetime.now(timezone.utc).isoformat()
-
-
-@app.task(name="app.workers.tasks.poll_options")
-def poll_options() -> str:
-    asyncio.run(_run_for_watchlist(ingest.poll_quotes))
+@app.task(name="app.workers.tasks.refresh_watchlist")
+def refresh_watchlist() -> str:
+    asyncio.run(_refresh_watchlist())
     return datetime.now(timezone.utc).isoformat()

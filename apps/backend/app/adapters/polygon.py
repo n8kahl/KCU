@@ -16,6 +16,12 @@ class PolygonClient:
             raise RuntimeError("Polygon API key required")
         self._client = httpx.AsyncClient(base_url=BASE_URL, timeout=10)
 
+    async def __aenter__(self) -> "PolygonClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
+
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         params = params or {}
         params["apiKey"] = settings.polygon_api_key
