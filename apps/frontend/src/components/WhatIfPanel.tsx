@@ -11,6 +11,8 @@ function WhatIfPanel({ ticker }: { ticker: string }) {
     mutation.mutate({ ticker, deltas: { spreadShrinksTo: spread, ivChange: iv, orbRetestConfirms: orb } });
   };
 
+  const result = mutation.data;
+
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
       <h3 className="font-semibold">What-If</h3>
@@ -27,14 +29,14 @@ function WhatIfPanel({ ticker }: { ticker: string }) {
           <input type="checkbox" checked={orb} onChange={(e) => setOrb(e.target.checked)} /> ORB retest confirms
         </label>
       </div>
-      <button className="mt-4 w-full rounded bg-emerald-700 py-2 text-sm" onClick={run}>
-        Recompute
+      <button className="mt-4 w-full rounded bg-emerald-700 py-2 text-sm" onClick={run} disabled={mutation.isPending}>
+        {mutation.isPending ? "Running..." : "Recompute"}
       </button>
-      {mutation.data && (
+      {result ? (
         <p className="mt-3 text-xs text-slate-300">
-          Revised {Math.round(mutation.data.revisedProbToAction * 100)}% → {mutation.data.revisedBand}
+          Revised {Math.round(result.revisedProbToAction * 100)}% → {result.revisedBand}
         </p>
-      )}
+      ) : null}
     </div>
   );
 }

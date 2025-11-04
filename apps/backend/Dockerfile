@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir -U pip && pip install --no-cache-dir -e .
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
+COPY start.sh ./start.sh
+
+RUN chmod +x start.sh
 
 EXPOSE 3001
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3001"]
+CMD ["./start.sh"]
