@@ -17,6 +17,9 @@ pip install -U pip && pip install -e .
 cp .env.example .env
 alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 3001 --reload
+
+# optional: run the live data worker (requires POLYGON_API_KEY, Redis URL)
+celery -A app.workers.celery_app.app worker -l INFO
 ```
 
 ## Frontend quickstart
