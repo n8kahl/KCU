@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import AdminLevers from "../components/AdminLevers";
 import WhatIfPanel from "../components/WhatIfPanel";
 import TickerTile from "../components/TickerTile";
@@ -18,8 +18,12 @@ function Dashboard() {
 
   useEffect(() => {
     const socket = connectWS((payload) => {
-      if (payload.type === "tile" && payload.data.symbol === selected) {
-        setLiveTile(payload.data);
+      if (payload?.type !== "tile" || !payload.data || typeof payload.data !== "object") {
+        return;
+      }
+      const tilePayload = payload.data as { symbol?: string } & Record<string, unknown>;
+      if (tilePayload.symbol === selected) {
+        setLiveTile(tilePayload);
       }
     });
     return () => socket.close();

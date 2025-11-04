@@ -2,6 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
+type WhatIfPayload = { ticker: string; deltas: Record<string, number | boolean> };
+type WhatIfResponse = {
+  symbol: string;
+  revisedProbToAction: number;
+  revisedBand: string;
+  revisedETAsec?: number | null;
+};
+
 async function getJSON<T>(path: string): Promise<T> {
   const resp = await fetch(`${BACKEND}${path}`);
   if (!resp.ok) throw new Error(`Request failed ${resp.status}`);
@@ -19,7 +27,9 @@ async function postJSON<T>(path: string, body: unknown, init?: RequestInit): Pro
   return resp.json();
 }
 
-function connectWS(onMessage: (payload: any) => void) {
+type WsPayload = { type?: string; data?: unknown };
+
+function connectWS(onMessage: (payload: WsPayload) => void) {
   const wsUrl = BACKEND.replace(/^http/, "ws") + "/ws/stream";
   const socket = new WebSocket(wsUrl);
   socket.onmessage = (event) => onMessage(JSON.parse(event.data));
@@ -31,7 +41,7 @@ function useTickers() {
 }
 
 function useTile(symbol: string | undefined) {
-  return useQuery<{ symbol: string } & Record<string, any>>({
+  return useQuery<{ symbol: string } & Record<string, unknown>>({
     queryKey: ["tile", symbol],
     queryFn: () => getJSON(`/api/tickers/${symbol}/state`),
     enabled: Boolean(symbol),
@@ -40,19 +50,19 @@ function useTile(symbol: string | undefined) {
 }
 
 function useWhatIf() {
-  return useMutation({
-    mutationFn: (payload: { ticker: string; deltas: Record<string, number | boolean> }) =>
-      postJSON("/api/what-if", payload),
+  return useMutation<WhatIfResponse, Error, WhatIfPayload>({
+    mutationFn: (payload) => postJSON("/api/what-if", payload),
   });
 }
 
 function usePolicyMutation() {
   const client = useQueryClient();
-  return useMutation({
-    mutationFn: (payload: { mode: string; overrides: Record<string, number> }) =>
+  return useMutation<{ message: string }, Error, { mode: string; overrides: Record<string, number> }>({
+    mutationFn: (payload) =>
       postJSON("/api/admin/policy", payload, { headers: { "x-api-key": localStorage.getItem("kcu_api_key") || "" } }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["tile"] }),
   });
 }
 
+export type { WhatIfResponse };
 export { BACKEND, connectWS, getJSON, postJSON, usePolicyMutation, useTickers, useTile, useWhatIf };
