@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
     polygon_api_key: str | None = Field(default=None, validation_alias="POLYGON_API_KEY")
     discord_webhook_url: str | None = Field(default=None, validation_alias="DISCORD_WEBHOOK_URL")
-    frontend_origin: str = Field(default="https://kcu-ui-production.up.railway.app", validation_alias="FRONTEND_ORIGIN")
+    frontend_origin: str = Field(
+        default="https://kcu-ui-production.up.railway.app", validation_alias="FRONTEND_ORIGIN"
+    )
     service_env: str = Field(default="development", validation_alias="SERVICE_ENV")
     api_key: str = Field(default="dev-admin-key", validation_alias="API_KEY")
     watchlist_raw: str = Field(default="SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL", validation_alias="WATCHLIST")
@@ -28,7 +30,14 @@ class Settings(BaseSettings):
 
     @property
     def cors_allowlist(self) -> list[str]:
-        return [self.frontend_origin, "http://localhost:5173", "http://127.0.0.1:5173"]
+        origins = [origin.strip() for origin in self.frontend_origin.split(",") if origin.strip()]
+        origins.append("https://kcu-ui-production.up.railway.app")
+        origins.extend(["http://localhost:5173", "http://127.0.0.1:5173"])
+        deduped: list[str] = []
+        for origin in origins:
+            if origin not in deduped:
+                deduped.append(origin)
+        return deduped
 
 
 @lru_cache(maxsize=1)
