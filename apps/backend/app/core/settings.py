@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     port: int = Field(default=3001, validation_alias="PORT")
     database_url: str = Field(default="postgresql+asyncpg://localhost/kcu", validation_alias="DATABASE_URL")
     redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
-    polygon_api_key: str | None = Field(default=None, validation_alias="POLYGON_API_KEY")
+    massive_api_key: str | None = Field(default=None, validation_alias="MASSIVE_API_KEY")
     discord_webhook_url: str | None = Field(default=None, validation_alias="DISCORD_WEBHOOK_URL")
     frontend_origin: str = Field(
         default="https://kcu-ui-production.up.railway.app", validation_alias="FRONTEND_ORIGIN"

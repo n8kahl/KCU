@@ -6,10 +6,9 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
 
-import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.adapters.polygon import PolygonClient
+from app.adapters.massive import MassiveClient
 from app.core.settings import settings
 from app.db.models import Snapshot
 from app.db.session import async_session
@@ -44,27 +43,15 @@ def _safe_mean(values: list[float], default: float = 0.0) -> float:
     return mean(values) if values else default
 
 
-async def _fetch_polygon_payload(symbol: str) -> dict[str, Any]:
+async def _fetch_massive_payload(symbol: str) -> dict[str, Any]:
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=2)
-    async with PolygonClient() as client:
+    async with MassiveClient() as client:
         candles = await client.get_aggregates(symbol, "minute", start, end)
         prev_close = await client.get_previous_close(symbol)
-        try:
-            premarket_range = await client.get_premarket_range(symbol, end)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                premarket_range = None
-            else:
-                raise
+        premarket_range = await client.get_premarket_range(symbol, end)
         quote = await client.get_quote_snapshot(symbol)
-        try:
-            options_chain = await client.get_options_chain(symbol, end)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                options_chain = []
-            else:
-                raise
+        options_chain = await client.get_options_chain(symbol, end)
     return {
         "candles": candles[-100:],
         "prev_close": prev_close,
@@ -273,10 +260,10 @@ async def _persist_snapshot(symbol: str, tile: TileState, meta: dict[str, Any]) 
 
 
 async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
-    if not settings.polygon_api_key:
+    if not settings.massive_api_key:
         return _synthetic_tile(symbol)
     try:
-        payload = await _fetch_polygon_payload(symbol)
+        payload = await _fetch_massive_payload(symbol)
         contributions, meta = _compute_contributions(symbol, payload)
         penalties = _calculate_penalties(payload, contributions)
         bonuses = _calculate_bonuses(contributions, payload)

@@ -18,7 +18,7 @@ cp .env.example .env
 alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 3001 --reload
 
-# optional: run the live data worker (requires POLYGON_API_KEY, Redis URL)
+# optional: run the live data worker (requires MASSIVE_API_KEY, Redis URL)
 celery -A app.workers.celery_app.app worker -l INFO
 ```
 
@@ -37,7 +37,7 @@ npm run dev
 3. **Backend service**
    - Build: `python`
    - Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-   - Required variables: `PORT=3001`, `DATABASE_URL`, `REDIS_URL`, `POLYGON_API_KEY`, `FRONTEND_ORIGIN=https://kcu-ui-production.up.railway.app`, `SERVICE_ENV=production`, `API_KEY=<admin>`, `WATCHLIST=SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL`, optional `DISCORD_WEBHOOK_URL`.
+  - Required variables: `PORT=3001`, `DATABASE_URL`, `REDIS_URL`, `MASSIVE_API_KEY`, `FRONTEND_ORIGIN=https://kcu-ui-production.up.railway.app`, `SERVICE_ENV=production`, `API_KEY=<admin>`, `WATCHLIST=SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL`, optional `DISCORD_WEBHOOK_URL`.
 4. **Frontend service**
    - Build: `node`
    - Start: `npm run preview -- --host --port $PORT`

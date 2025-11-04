@@ -6,7 +6,7 @@ from typing import Any
 
 import structlog
 
-SENSITIVE_KEYS = {"api_key", "polygon_api_key", "authorization"}
+SENSITIVE_KEYS = {"api_key", "massive_api_key", "authorization"}
 
 
 def _redact_processor(logger: logging.Logger, method_name: str, event_dict: dict[str, Any]):
