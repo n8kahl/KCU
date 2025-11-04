@@ -8,6 +8,7 @@ type TileProps = {
   tile: any;
   onAction: (action: string) => void;
   onInspect: (tile: any) => void;
+  swipeHandlers?: React.HTMLAttributes<HTMLDivElement>;
 };
 
 const bandStyles: Record<string, string> = {
@@ -16,14 +17,14 @@ const bandStyles: Record<string, string> = {
   EntryReady: "bg-emerald-500 text-black",
 };
 
-function TickerTile({ tile, onAction, onInspect }: TileProps) {
+function TickerTile({ tile, onAction, onInspect, swipeHandlers }: TileProps) {
   const options = tile.options || {};
   const marketMicro = tile.admin?.marketMicro;
   const timing = tile.admin?.timing;
   const price = tile.admin?.lastPrice;
   const probabilityHistory = (tile.history || []).map((h: any) => (h.score ?? 0) / 100);
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-2xl">
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-2xl" {...swipeHandlers}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-xs uppercase tracking-wide text-slate-400">{tile.regime}</p>

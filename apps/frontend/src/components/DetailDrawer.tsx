@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useRef } from "react";
 import IndexConfluenceStrip from "./IndexConfluenceStrip";
 import ManagingPanel from "./ManagingPanel";
 import MTFMatrix from "./MTFMatrix";
@@ -10,10 +10,48 @@ function DetailDrawer({ tile, onClose }: { tile: any; onClose: () => void }) {
   const options = tile.options || {};
   const contracts = options.contracts || {};
   const marketMicro = tile.admin?.marketMicro;
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+  const startY = useRef<number | null>(null);
+  const deltaY = useRef(0);
+
+  const resetTransform = () => {
+    if (sheetRef.current) {
+      sheetRef.current.style.transform = "";
+    }
+  };
+
+  const onTouchStart = (event: React.TouchEvent) => {
+    startY.current = event.touches[0].clientY;
+    deltaY.current = 0;
+  };
+
+  const onTouchMove = (event: React.TouchEvent) => {
+    if (startY.current === null || !sheetRef.current) return;
+    deltaY.current = event.touches[0].clientY - startY.current;
+    if (deltaY.current > 0) {
+      sheetRef.current.style.transform = `translateY(${Math.min(deltaY.current, 120)}px)`;
+    }
+  };
+
+  const onTouchEnd = () => {
+    if (deltaY.current > 100) {
+      onClose();
+      return;
+    }
+    resetTransform();
+    startY.current = null;
+    deltaY.current = 0;
+  };
   return (
     <div className="fixed inset-0 z-40 flex">
       <div className="flex-1 bg-black/60" onClick={onClose} />
-      <aside className="flex w-full max-w-3xl flex-col overflow-y-auto bg-slate-950 p-6">
+      <aside
+        ref={sheetRef}
+        className="flex w-full max-w-3xl flex-col overflow-y-auto bg-slate-950 p-6 transition-transform duration-150"
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      >
         <div className="flex items-center justify-between">
           <div>
             <p className="text-xs uppercase text-slate-500">Now</p>

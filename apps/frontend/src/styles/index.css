@@ -7,5 +7,11 @@
 }
 
 body {
-  @apply bg-slate-950 text-slate-100 min-h-screen font-sans;
+  @apply min-h-screen bg-slate-950 text-slate-100 font-sans;
+  background-image: radial-gradient(circle at top, rgba(56, 189, 248, 0.12), transparent 45%), radial-gradient(circle at 20% 20%, rgba(16, 185, 129, 0.16), transparent 40%), radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.12), transparent 35%);
+  background-attachment: fixed;
+}
+
+.glass-panel {
+  @apply bg-slate-900/70 backdrop-blur border border-slate-800;
 }
