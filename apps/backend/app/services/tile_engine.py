@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
 
+import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.adapters.polygon import PolygonClient
@@ -49,13 +50,25 @@ async def _fetch_polygon_payload(symbol: str) -> dict[str, Any]:
     async with PolygonClient() as client:
         candles = await client.get_aggregates(symbol, "minute", start, end)
         prev_close = await client.get_previous_close(symbol)
-        premarket_range = await client.get_premarket_range(symbol, end)
+        try:
+            premarket_range = await client.get_premarket_range(symbol, end)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                premarket_range = None
+            else:
+                raise
         quote = await client.get_quote_snapshot(symbol)
-        options_chain = await client.get_options_chain(symbol, end)
+        try:
+            options_chain = await client.get_options_chain(symbol, end)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                options_chain = []
+            else:
+                raise
     return {
         "candles": candles[-100:],
         "prev_close": prev_close,
-        "premarket": premarket_range,
+        "premarket": premarket_range or {},
         "quote": quote,
         "options_chain": options_chain,
     }
@@ -104,12 +117,19 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
     last_price = closes[-1]
     prior = payload.get("prev_close", {}).get("results", [{}])[0]
     prior_close = prior.get("c") or last_price
-    premarket = payload.get("premarket", {})
-    pre_high = premarket.get("preMarketHigh") or last_price
+    premarket = payload.get("premarket") or {}
+    if not premarket:
+        recent_window = closes[:5] if len(closes) >= 5 else closes
+        pre_high = max(recent_window)
+        pre_low = min(recent_window)
+    else:
+        pre_high = premarket.get("preMarketHigh") or last_price
+        pre_low = premarket.get("preMarketLow") or last_price
     distance_to_level = (last_price - pre_high) / pre_high
     anchored_vwap_dist = (last_price - prior_close) / prior_close
-    orb_high = max(closes[:3]) if len(closes) >= 3 else last_price
-    orb_low = min(closes[:3]) if len(closes) >= 3 else last_price
+    orb_window = closes[:15] if len(closes) >= 15 else closes
+    orb_high = max(orb_window) if orb_window else last_price
+    orb_low = min(orb_window) if orb_window else last_price
     orb_overlap = (orb_high - orb_low) / max(last_price, 1)
     levels = levels_cluster(distance_to_level, abs(orb_overlap), anchored_vwap_dist)
 
@@ -121,7 +141,7 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
     patience = patience_candle_quality(body_pct, wick_ratio, _normalize(last_candle.get("v", 0), 0, 1))
 
     adr = (max(closes) - min(closes)) / prior_close if prior_close else 0.01
-    range_pct_adr = (orb_high - orb_low) / (prior_close * adr or 1)
+    range_pct_adr = (orb_high - orb_low) / max(prior_close * adr, 1e-6)
     acceptance_time = len(candles)
     retest_success = last_price > orb_high
     orb = orb_regime_score(range_pct_adr, acceptance_time * 60, retest_success)
