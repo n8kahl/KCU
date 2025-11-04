@@ -24,7 +24,7 @@ class StateMachine:
         self._overrides[symbol] = override
 
     def derive_state(self, symbol: str, score: float) -> TileBand:
-        now = datetime.now(timezone.utc).timetz()
+        now = datetime.now(timezone.utc).time()
         if time(9, 30) <= now <= time(9, 35):
             return TileBand("Paused")
         template = get_template("Normal", self._policy["mode"])
