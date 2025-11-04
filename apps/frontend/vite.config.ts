@@ -6,6 +6,9 @@ export default defineConfig({
   server: {
     port: 5173,
   },
+  preview: {
+    allowedHosts: ["kcu-ui-production.up.railway.app"],
+  },
   test: {
     environment: "jsdom",
     setupFiles: ["./src/setupTests.ts"],
