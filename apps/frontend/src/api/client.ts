@@ -1,6 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
+const FALLBACK_BACKEND =
+  typeof window !== "undefined" && window.location.hostname.endsWith("railway.app")
+    ? "https://kcu.up.railway.app"
+    : "http://localhost:3001";
+const BACKEND = import.meta.env.VITE_BACKEND_URL || FALLBACK_BACKEND;
 
 type WhatIfPayload = { ticker: string; deltas: Record<string, number | boolean> };
 type WhatIfResponse = {
