@@ -20,13 +20,15 @@ from app.domain.features import (
     patience_candle_quality,
     trend_stack,
 )
+from app.domain.options.buckets import ETF_INDEX, contract_metadata, option_bucket
 from app.domain.options_health import diagnostics
 from app.domain.scoring import aggregate_probability, confidence_interval
 from app.domain.types import TileState
-from app.domain.options.buckets import ETF_INDEX, contract_metadata, option_bucket
 from app.services.baselines import baseline_service, percentile_rank, percentile_to_label
 from app.services.state_machine import StateMachine
 from app.services.state_store import state_store
+from app.services.timing import get_timing_context
+from app.services.tp_manager import tp_manager
 from app.ws.manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,25 @@ def _structure_flags(closes: list[float]) -> list[int]:
 
 def _safe_mean(values: list[float], default: float = 0.0) -> float:
     return mean(values) if values else default
+
+
+def _atr(candles: list[dict[str, Any]], period: int = 5) -> float | None:
+    if len(candles) < 2:
+        return None
+    closes = [c.get("c") for c in candles if c.get("c") is not None]
+    if len(closes) < 2:
+        return None
+    trs: list[float] = []
+    prev_close = closes[-period - 1] if len(closes) > period else closes[0]
+    for candle in candles[-period:]:
+        high = candle.get("h") or prev_close
+        low = candle.get("l") or prev_close
+        tr = max(high - low, abs(high - prev_close), abs(prev_close - low))
+        trs.append(tr)
+        prev_close = candle.get("c", prev_close)
+    if not trs:
+        return None
+    return float(sum(trs) / len(trs))
 
 
 async def _fetch_massive_payload(symbol: str) -> dict[str, Any]:
@@ -225,6 +246,15 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
     orb_low = min(orb_window) if orb_window else last_price
     orb_overlap = (orb_high - orb_low) / max(last_price, 1)
     levels = levels_cluster(distance_to_level, abs(orb_overlap), anchored_vwap_dist)
+    level_stack = [
+        {"label": "Premarket High", "price": pre_high},
+        {"label": "Premarket Low", "price": pre_low},
+        {"label": "Prior High", "price": prior.get("h")},
+        {"label": "Prior Low", "price": prior.get("l")},
+        {"label": "Prior Close", "price": prior_close},
+        {"label": "ORB High", "price": orb_high},
+        {"label": "ORB Low", "price": orb_low},
+    ]
 
     last_candle = candles[-1] if candles else {"o": last_price, "c": last_price, "h": last_price, "l": last_price, "v": 0}
     body = abs(last_candle.get("c", last_price) - last_candle.get("o", last_price))
@@ -249,6 +279,7 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
     vix_proxy = _normalize(spread_proxy, 0, 20)
     spy_alignment = 0.7 if symbol != "SPY" else 0.9
     market = market_filters(breadth, vix_proxy, spy_alignment)
+    atr_value = _atr(candles)
 
     contributions = {
         "TrendStack": trend["score"],
@@ -262,6 +293,10 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
         "orb": {"range_pct": range_pct_adr, "retest_success": retest_success},
         "patience": {"body_pct": round(body_pct, 4), "wick_ratio": round(wick_ratio, 4)},
         "series": {"closes": closes[-120:] if len(closes) >= 2 else closes},
+        "levels": [lvl for lvl in level_stack if lvl.get("price")],
+        "atr": atr_value,
+        "ema": ema_fast,
+        "last_price": last_price,
     }
     return contributions, meta
 
@@ -346,6 +381,7 @@ def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
     bonuses = {"king_queen": 6}
     probability, band = aggregate_probability(contributions, penalties, bonuses)
     confidence = confidence_interval(int(probability * 100), 100, "Normal")
+    timing = get_timing_context(now)
     tile = TileState(
         symbol=symbol,
         regime="Normal",
@@ -375,7 +411,14 @@ def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             "liquidity_risk": 60,
         },
         rationale={"positives": ["Synthetic pipeline"], "risks": ["Waiting on live key"]},
-        admin={"mode": "Standard", "overrides": {}, "marketMicro": _default_market_micro(), "last_1m_closes": []},
+        admin={
+            "mode": "Standard",
+            "overrides": {},
+            "marketMicro": _default_market_micro(),
+            "last_1m_closes": [],
+            "timing": timing,
+            "lastPrice": 0.0,
+        },
         timestamps={"updated": now.isoformat()},
         eta_seconds=60,
         penalties=penalties,
@@ -475,7 +518,22 @@ async def merge_realtime_into_tile(symbol: str, deltas: dict[str, Any]) -> TileS
     merged_market = {**market_admin, **market_micro}
     admin = dict(tile.admin or {})
     admin["marketMicro"] = merged_market
+    if "timing" not in admin:
+        admin["timing"] = get_timing_context(datetime.now(timezone.utc))
     tile.admin = admin
+    plan = await tp_manager.on_tick(
+        symbol,
+        admin.get("lastPrice"),
+        tile.probability_to_action,
+        (tile.options or {}).get("liquidity_risk") if tile.options else None,
+        admin["marketMicro"],
+        admin["timing"],
+    )
+    if plan:
+        admin["managing"] = plan
+        options = dict(tile.options or {})
+        options["tp_plan"] = plan
+        tile.options = options
     tile.timestamps["updated"] = datetime.now(timezone.utc).isoformat()
     await state_store.set_state(symbol, tile)
     return tile
@@ -489,7 +547,6 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
         contributions, meta = _compute_contributions(symbol, payload)
         penalties = _calculate_penalties(payload, contributions)
         bonuses = _calculate_bonuses(contributions, payload)
-        _apply_percentile_penalties(options_snapshot, penalties)
         probability, band = aggregate_probability(contributions, penalties, bonuses)
         confidence = confidence_interval(int(probability * 100), 150, "Normal")
         history_tile = await state_store.get_state(symbol)
@@ -497,14 +554,41 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
         history.append({"ts": datetime.now(timezone.utc).isoformat(), "score": probability * 100})
         options_snapshot = _options_snapshot(symbol, payload)
         options_snapshot = await _hydrate_options_metrics(symbol, options_snapshot)
+        _apply_percentile_penalties(options_snapshot, penalties)
         prev_micro = history_tile.admin.get("marketMicro") if history_tile and history_tile.admin else _default_market_micro()
+        timing = get_timing_context(datetime.now(timezone.utc))
+        last_price = meta.get("last_price")
         admin = {
             "mode": "Standard",
             "overrides": {},
             "marketMicro": prev_micro,
             "last_1m_closes": meta.get("series", {}).get("closes", []),
+            "timing": timing,
+            "lastPrice": last_price,
         }
+        await tp_manager.update_context(
+            symbol,
+            {
+                "levels": meta.get("levels", []),
+                "atr": meta.get("atr"),
+                "ema": meta.get("ema"),
+                "regime": "Fast" if probability > 0.8 else "Normal",
+                "timing": timing,
+                "last_price": last_price,
+            },
+        )
         confidence = await _adjust_confidence(symbol, confidence, options_snapshot, admin["marketMicro"])
+        plan = await tp_manager.on_tick(
+            symbol,
+            last_price,
+            probability,
+            options_snapshot.get("liquidity_risk"),
+            admin["marketMicro"],
+            timing,
+        )
+        if plan:
+            admin["managing"] = plan
+            options_snapshot["tp_plan"] = plan
         tile = TileState(
             symbol=symbol,
             regime="Fast" if probability > 0.8 else "Normal",

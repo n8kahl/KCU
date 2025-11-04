@@ -64,7 +64,16 @@ The GitHub Actions workflow installs backend deps, runs `pytest --cov`, builds t
 - Frontend tests: `cd apps/frontend && npm run test`
 - Smoke health: `curl http://localhost:3001/api/health`
 
+## API Endpoints
+
+- `GET /api/health` – service heartbeat + baseline timestamps.
+- `GET /api/tickers`, `GET /api/tickers/{symbol}/state` – REST fallback for tiles.
+- `POST /api/what-if` – recalc probability under hypothetical deltas.
+- `POST /api/admin/policy` / `POST /api/admin/override` – mode and per-symbol overrides (API key).
+- `POST /api/positions/start` / `/stop` – trigger KCU Take-Profit Manager (API key).
+
 ## Sprint Log
 
 - **2025-11-04 · Sprint 1** — Massive WS ingestion online (SPX/NDX indices + option quotes), new realtime engine with ring buffers & MTF microstructure, ETF↔Index coupling, REST pipeline demoted to 60 s backfill, plan doc updated.
 - **2025-11-04 · Sprint 2** — Added 90-day percentile baselines + nightly Celery jobs, percentile-aware penalties + LiquidityRiskScore v2, realtime options flicker tracking, CI widening logic, and persisted market-micro JSON for calibration.
+- **2025-11-04 · Sprint 3** — Introduced KCU Take-Profit Manager (level snapping, runner trail/extension), timing considerations chip, managing panel payloads, and secured `/api/positions` endpoints for human-in-the-loop starts/stops.

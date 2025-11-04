@@ -13,6 +13,10 @@ async def verify_api_key(header: str | None = Security(api_key_header)) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
+async def require_api_key(_: None = Depends(verify_api_key)) -> None:
+    return None
+
+
 async def require_watchlist(symbol: str) -> str:
     if symbol.upper() not in settings.watchlist:
         raise HTTPException(status_code=404, detail="Unknown symbol")
