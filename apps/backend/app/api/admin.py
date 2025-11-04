@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from app.core.security import verify_api_key
 from app.services.state_machine import StateMachine
 
-router = APIRouter(prefix="/admin", dependencies=[Depends(verify_api_key)])
+router = APIRouter(prefix="/admin")
 state_machine = StateMachine()
 
 

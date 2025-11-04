@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import * as api from "../../api/client";
 import WhatIfPanel from "../../components/WhatIfPanel";
 

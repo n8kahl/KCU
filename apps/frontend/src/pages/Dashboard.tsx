@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import AdminLevers from "../components/AdminLevers";
+import DetailDrawer from "../components/DetailDrawer";
 import WhatIfPanel from "../components/WhatIfPanel";
 import TickerTile from "../components/TickerTile";
 import { connectWS, useTickers, useTile } from "../api/client";
@@ -9,12 +10,15 @@ function Dashboard() {
   const [selected, setSelected] = useState<string | undefined>();
   const tileQuery = useTile(selected || data?.tickers?.[0]);
   const [liveTile, setLiveTile] = useState<any | null>(null);
+  const [drawerTile, setDrawerTile] = useState<any | null>(null);
 
   useEffect(() => {
     if (!selected && data?.tickers?.length) {
       setSelected(data.tickers[0]);
     }
   }, [data, selected]);
+
+  const drawerSymbol = drawerTile?.symbol;
 
   useEffect(() => {
     const socket = connectWS((payload) => {
@@ -25,9 +29,12 @@ function Dashboard() {
       if (tilePayload.symbol === selected) {
         setLiveTile(tilePayload);
       }
+      if (drawerSymbol && tilePayload.symbol === drawerSymbol) {
+        setDrawerTile(tilePayload);
+      }
     });
     return () => socket.close();
-  }, [selected]);
+  }, [selected, drawerSymbol]);
 
   const tile = liveTile || tileQuery.data;
 
@@ -45,12 +52,17 @@ function Dashboard() {
             </button>
           ))}
         </div>
-        {tile ? <TickerTile tile={tile} onAction={() => {}} /> : <div className="rounded border border-slate-800 p-6">Loading…</div>}
+        {tile ? (
+          <TickerTile tile={tile} onAction={() => {}} onInspect={(payload) => setDrawerTile(payload)} />
+        ) : (
+          <div className="rounded border border-slate-800 p-6">Loading…</div>
+        )}
       </section>
       <section className="space-y-4">
         {selected && <WhatIfPanel ticker={selected} />}
         <AdminLevers />
       </section>
+      {drawerTile && <DetailDrawer tile={drawerTile} onClose={() => setDrawerTile(null)} />}
     </main>
   );
 }

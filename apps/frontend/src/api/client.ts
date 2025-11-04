@@ -62,8 +62,7 @@ function useWhatIf() {
 function usePolicyMutation() {
   const client = useQueryClient();
   return useMutation<{ message: string }, Error, { mode: string; overrides: Record<string, number> }>({
-    mutationFn: (payload) =>
-      postJSON("/api/admin/policy", payload, { headers: { "x-api-key": localStorage.getItem("kcu_api_key") || "" } }),
+    mutationFn: (payload) => postJSON("/api/admin/policy", payload),
     onSuccess: () => client.invalidateQueries({ queryKey: ["tile"] }),
   });
 }

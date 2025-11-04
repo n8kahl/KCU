@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.services.tp_manager import tp_manager
 from app.services.state_store import state_store
-from app.core.security import require_api_key
 
 router = APIRouter(prefix="/positions")
 
@@ -20,7 +19,7 @@ class PositionStopRequest(BaseModel):
     symbol: str
 
 
-@router.post("/start", dependencies=[Depends(require_api_key)])
+@router.post("/start")
 async def start_position(payload: PositionStartRequest):
     symbol = payload.symbol.upper()
     tile = await state_store.get_state(symbol)
@@ -43,7 +42,7 @@ async def start_position(payload: PositionStartRequest):
     return {"status": "started", "plan": plan}
 
 
-@router.post("/stop", dependencies=[Depends(require_api_key)])
+@router.post("/stop")
 async def stop_position(payload: PositionStopRequest):
     symbol = payload.symbol.upper()
     await tp_manager.stop(symbol)

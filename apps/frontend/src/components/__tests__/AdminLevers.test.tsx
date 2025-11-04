@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import * as api from "../../api/client";
 import AdminLevers from "../../components/AdminLevers";
 

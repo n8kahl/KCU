@@ -418,6 +418,7 @@ def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             "last_1m_closes": [],
             "timing": timing,
             "lastPrice": 0.0,
+            "orb": {"range_pct": 0.3, "retest_success": False},
         },
         timestamps={"updated": now.isoformat()},
         eta_seconds=60,
@@ -565,6 +566,7 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             "last_1m_closes": meta.get("series", {}).get("closes", []),
             "timing": timing,
             "lastPrice": last_price,
+            "orb": meta.get("orb"),
         }
         await tp_manager.update_context(
             symbol,
