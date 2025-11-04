@@ -28,8 +28,12 @@ from app.services.state_store import state_store
 from app.ws.manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
-REFRESH_SECONDS = 15
+REFRESH_SECONDS = 60
 state_machine = StateMachine()
+
+
+def _default_market_micro() -> dict[str, float]:
+    return {"minuteThrust": 0.0, "microChop": 0.0, "divergenceZ": 0.0}
 
 
 def _structure_flags(closes: list[float]) -> list[int]:
@@ -70,9 +74,12 @@ def _summarize_options(options_chain: list[dict[str, Any]]) -> dict[str, Any]:
             "oi": None,
             "volume": None,
             "nbbo": "unknown",
+            "contracts": {"primary": None, "backups": []},
         }
     ordered = sorted(options_chain, key=lambda c: abs((c.get("delta") or 0) - 0.4))
     pick = ordered[0]
+    backups = [doc.get("contract") for doc in ordered[1:3] if doc.get("contract")]
+    primary = pick.get("contract")
     return {
         "spread_pct": pick.get("spread_pct_of_mid"),
         "ivr": pick.get("iv"),
@@ -80,6 +87,7 @@ def _summarize_options(options_chain: list[dict[str, Any]]) -> dict[str, Any]:
         "oi": pick.get("oi"),
         "volume": pick.get("volume"),
         "nbbo": pick.get("nbbo_quality", "stable"),
+        "contracts": {"primary": primary, "backups": backups},
     }
 
 
@@ -155,6 +163,7 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
     meta = {
         "orb": {"range_pct": range_pct_adr, "retest_success": retest_success},
         "patience": {"body_pct": round(body_pct, 4), "wick_ratio": round(wick_ratio, 4)},
+        "series": {"closes": closes[-120:] if len(closes) >= 2 else closes},
     }
     return contributions, meta
 
@@ -221,16 +230,29 @@ def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
         band=band,
         confidence=confidence,
         breakdown=[{"name": k, "score": v} for k, v in contributions.items()],
-        options={"spread_pct": 6, "ivr": 35, "delta_target": 0.42, "oi": 20000, "volume": 10000, "nbbo": "stable", "liquidity_score": 70},
+        options={
+            "spread_pct": 6,
+            "ivr": 35,
+            "delta_target": 0.42,
+            "oi": 20000,
+            "volume": 10000,
+            "nbbo": "stable",
+            "liquidity_score": 70,
+            "contracts": {"primary": None, "backups": []},
+        },
         rationale={"positives": ["Synthetic pipeline"], "risks": ["Waiting on live key"]},
-        admin={"mode": "Standard", "overrides": {}},
+        admin={"mode": "Standard", "overrides": {}, "marketMicro": _default_market_micro(), "last_1m_closes": []},
         timestamps={"updated": now.isoformat()},
         eta_seconds=60,
         penalties=penalties,
         bonuses=bonuses,
         history=[],
     )
-    meta = {"orb": {"range_pct": 0.3, "retest_success": False}, "patience": {"body_pct": 0.5, "wick_ratio": 1.0}}
+    meta = {
+        "orb": {"range_pct": 0.3, "retest_success": False},
+        "patience": {"body_pct": 0.5, "wick_ratio": 1.0},
+        "series": {"closes": []},
+    }
     return tile, meta
 
 
@@ -259,6 +281,65 @@ async def _persist_snapshot(symbol: str, tile: TileState, meta: dict[str, Any]) 
         logger.warning("snapshot-persist-failed", extra={"symbol": symbol, "error": str(exc)})
 
 
+async def merge_realtime_into_tile(symbol: str, deltas: dict[str, Any]) -> TileState:
+    tile = await state_store.get_state(symbol)
+    if not tile:
+        tile, _ = await build_tile(symbol)
+        await state_store.set_state(symbol, tile)
+    contributions = {item["name"]: item["score"] for item in tile.breakdown}
+    market_micro = deltas.get("marketMicro") or {}
+    alpha = 0.55
+    micro_signals: list[float] = []
+    if "minuteThrust" in market_micro:
+        micro_signals.append(max(0.0, float(market_micro["minuteThrust"])))
+    if "microChop" in market_micro:
+        micro_signals.append(max(0.0, 1.0 - float(market_micro["microChop"])))
+    if "divergenceZ" in market_micro:
+        micro_signals.append(max(0.0, 1.0 - min(1.0, abs(float(market_micro["divergenceZ"])) / 1.5)))
+    if micro_signals:
+        micro_sum = 0.0
+        for idx, value in enumerate(sorted(micro_signals, reverse=True)):
+            micro_sum += value / (1 + alpha * idx)
+        target = micro_sum / len(micro_signals)
+        contributions["Market"] = max(0.0, min(1.0, 0.6 * contributions.get("Market", 0.5) + 0.4 * target))
+
+    penalties = dict(tile.penalties or {})
+    if market_micro.get("microChop", 0) and market_micro["microChop"] >= 0.6:
+        penalties["chop"] = -8
+    if abs(float(market_micro.get("divergenceZ", 0) or 0)) >= 1.5:
+        penalties["divergence"] = -6
+
+    bonuses = dict(tile.bonuses or {})
+    minute_ok = market_micro.get("minuteThrust", 0) > 0
+    div_ok = abs(float(market_micro.get("divergenceZ", 0) or 0)) <= 0.7
+    if not (minute_ok and div_ok):
+        if "king_queen" in bonuses:
+            bonuses["king_queen"] = max(0, int(bonuses["king_queen"] * 0.6))
+        if "orb_retest" in bonuses:
+            bonuses["orb_retest"] = max(0, int(bonuses["orb_retest"] * 0.6))
+
+    probability, band = aggregate_probability(contributions, penalties, bonuses)
+    confidence = confidence_interval(int(probability * 100), 150, tile.regime)
+    if market_micro.get("microChop", 0) >= 0.6:
+        confidence["p68"] = min(confidence["p68"] + 0.02, 0.99)
+        confidence["p95"] = min(confidence["p95"] + 0.03, 0.99)
+
+    tile.breakdown = [{"name": name, "score": round(score, 3)} for name, score in contributions.items()]
+    tile.penalties = penalties
+    tile.bonuses = bonuses
+    tile.probability_to_action = probability
+    tile.band = band
+    tile.confidence = confidence
+    market_admin = tile.admin.get("marketMicro", _default_market_micro()) if tile.admin else _default_market_micro()
+    merged_market = {**market_admin, **market_micro}
+    admin = dict(tile.admin or {})
+    admin["marketMicro"] = merged_market
+    tile.admin = admin
+    tile.timestamps["updated"] = datetime.now(timezone.utc).isoformat()
+    await state_store.set_state(symbol, tile)
+    return tile
+
+
 async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
     if not settings.massive_api_key:
         return _synthetic_tile(symbol)
@@ -272,6 +353,13 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
         history_tile = await state_store.get_state(symbol)
         history = history_tile.history[-2:] if history_tile else []
         history.append({"ts": datetime.now(timezone.utc).isoformat(), "score": probability * 100})
+        options_snapshot = _options_snapshot(payload)
+        admin = {
+            "mode": "Standard",
+            "overrides": {},
+            "marketMicro": _default_market_micro(),
+            "last_1m_closes": meta.get("series", {}).get("closes", []),
+        }
         tile = TileState(
             symbol=symbol,
             regime="Fast" if probability > 0.8 else "Normal",
@@ -279,9 +367,9 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             band=band,
             confidence=confidence,
             breakdown=[{"name": name, "score": round(score, 3)} for name, score in contributions.items()],
-            options=_options_snapshot(payload),
+            options=options_snapshot,
             rationale=_build_rationale(contributions, penalties),
-            admin={"mode": "Standard", "overrides": {}},
+            admin=admin,
             timestamps={"updated": datetime.now(timezone.utc).isoformat()},
             eta_seconds=45 if band.label == "Loading" else None,
             penalties=penalties,

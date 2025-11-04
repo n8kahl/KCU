@@ -13,6 +13,7 @@ from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.settings import settings
 from app.db.session import engine
+from app.services.realtime_engine import start_realtime
 from app.services.state_store import state_store
 from app.services.tile_engine import run_tile_pipeline
 from app.ws.manager import ConnectionManager
@@ -42,6 +43,7 @@ async def startup_event() -> None:
         logger.exception("DB connection FAILED")
     asyncio.create_task(manager.heartbeat())
     asyncio.create_task(run_tile_pipeline(manager))
+    asyncio.create_task(start_realtime(manager))
 
 
 @app.websocket("/ws/stream")

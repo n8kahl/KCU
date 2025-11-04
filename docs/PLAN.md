@@ -30,3 +30,4 @@ REST polling remains for snapshots/backfill (cadence will drop to ~60s). The new
 | Sprint | Date | Summary |
 | --- | --- | --- |
 | _Phase 0_ | _TBD_ | Initial plan authored; no behavior changes yet. |
+| Sprint 1 | 2025-11-04 | Massive WS ingestion, ring buffers, microstructure scoring merge, ETF↔Index coupling, REST demoted to 60s backfill. |

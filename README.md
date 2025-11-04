@@ -63,3 +63,7 @@ The GitHub Actions workflow installs backend deps, runs `pytest --cov`, builds t
 - Frontend dev server: `cd apps/frontend && npm run dev`
 - Frontend tests: `cd apps/frontend && npm run test`
 - Smoke health: `curl http://localhost:3001/api/health`
+
+## Sprint Log
+
+- **2025-11-04 · Sprint 1** — Massive WS ingestion online (SPX/NDX indices + option quotes), new realtime engine with ring buffers & MTF microstructure, ETF↔Index coupling, REST pipeline demoted to 60 s backfill, plan doc updated.
