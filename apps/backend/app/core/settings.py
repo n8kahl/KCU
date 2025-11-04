@@ -39,6 +39,12 @@ class Settings(BaseSettings):
                 deduped.append(origin)
         return deduped
 
+    @property
+    def database_url_async(self) -> str:
+        if self.database_url.startswith("postgresql://") and "+asyncpg" not in self.database_url:
+            return self.database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return self.database_url
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
