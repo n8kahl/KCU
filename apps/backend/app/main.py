@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 
+import logging
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api import api_router
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.settings import settings
+from app.db.session import engine
 from app.services.state_store import state_store
 from app.services.tile_engine import run_tile_pipeline
 from app.ws.manager import ConnectionManager
@@ -25,10 +29,17 @@ app.include_router(api_router)
 register_exception_handlers(app)
 
 manager = ConnectionManager()
+logger = logging.getLogger("uvicorn")
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("select 1"))
+        logger.info("DB connection OK")
+    except Exception:
+        logger.exception("DB connection FAILED")
     asyncio.create_task(manager.heartbeat())
     asyncio.create_task(run_tile_pipeline(manager))
 
