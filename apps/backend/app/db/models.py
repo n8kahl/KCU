@@ -73,3 +73,17 @@ class Snapshot(Base):
     bonuses: Mapped[dict] = mapped_column(JSONB)
     state: Mapped[str] = mapped_column(String(32))
     rationale: Mapped[dict] = mapped_column(JSONB)
+    market_micro: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class PercentileBaseline(Base):
+    __tablename__ = "percentile_baselines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    metric: Mapped[str] = mapped_column(String(64), index=True)
+    bucket_key: Mapped[str] = mapped_column(String(128), index=True)
+    p50: Mapped[float] = mapped_column(Float)
+    p75: Mapped[float] = mapped_column(Float)
+    p90: Mapped[float] = mapped_column(Float)
+    p95: Mapped[float] = mapped_column(Float)
+    asof: Mapped[date] = mapped_column(Date, index=True)

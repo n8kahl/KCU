@@ -67,3 +67,4 @@ The GitHub Actions workflow installs backend deps, runs `pytest --cov`, builds t
 ## Sprint Log
 
 - **2025-11-04 · Sprint 1** — Massive WS ingestion online (SPX/NDX indices + option quotes), new realtime engine with ring buffers & MTF microstructure, ETF↔Index coupling, REST pipeline demoted to 60 s backfill, plan doc updated.
+- **2025-11-04 · Sprint 2** — Added 90-day percentile baselines + nightly Celery jobs, percentile-aware penalties + LiquidityRiskScore v2, realtime options flicker tracking, CI widening logic, and persisted market-micro JSON for calibration.

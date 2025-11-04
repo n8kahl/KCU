@@ -31,3 +31,4 @@ REST polling remains for snapshots/backfill (cadence will drop to ~60s). The new
 | --- | --- | --- |
 | _Phase 0_ | _TBD_ | Initial plan authored; no behavior changes yet. |
 | Sprint 1 | 2025-11-04 | Massive WS ingestion, ring buffers, microstructure scoring merge, ETF↔Index coupling, REST demoted to 60s backfill. |
+| Sprint 2 | 2025-11-04 | 90‑day percentile baselines, nightly Celery jobs, LiquidityRiskScore v2, percentile-aware penalties + CI widening, realtime options flicker metrics. |

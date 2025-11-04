@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from statistics import mean
+from statistics import mean, pstdev
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -23,6 +23,8 @@ from app.domain.features import (
 from app.domain.options_health import diagnostics
 from app.domain.scoring import aggregate_probability, confidence_interval
 from app.domain.types import TileState
+from app.domain.options.buckets import ETF_INDEX, contract_metadata, option_bucket
+from app.services.baselines import baseline_service, percentile_rank, percentile_to_label
 from app.services.state_machine import StateMachine
 from app.services.state_store import state_store
 from app.ws.manager import ConnectionManager
@@ -33,7 +35,7 @@ state_machine = StateMachine()
 
 
 def _default_market_micro() -> dict[str, float]:
-    return {"minuteThrust": 0.0, "microChop": 0.0, "divergenceZ": 0.0}
+    return {"minuteThrust": 0.0, "microChop": 0.0, "divergenceZ": 0.0, "secVariance": 0.0}
 
 
 def _structure_flags(closes: list[float]) -> list[int]:
@@ -88,7 +90,103 @@ def _summarize_options(options_chain: list[dict[str, Any]]) -> dict[str, Any]:
         "volume": pick.get("volume"),
         "nbbo": pick.get("nbbo_quality", "stable"),
         "contracts": {"primary": primary, "backups": backups},
+        "flicker_per_sec": None,
+        "spread_percentile_rank": None,
+        "flicker_percentile_rank": None,
+        "ivr_percentile_rank": None,
+        "vo_vol_percentile_rank": None,
+        "liquidity_risk": None,
+        "vo_vol": None,
+        "dte_days": None,
+        "bucket_key": None,
+        "spread_percentile_label": "p--",
+        "flicker_label": "p--",
     }
+
+
+def _calc_vo_vol(candles: list[dict[str, Any]]) -> float | None:
+    closes = [c.get("c") for c in candles if c.get("c")]
+    if len(closes) < 10:
+        return None
+    returns = [(b - a) / a for a, b in zip(closes[:-1], closes[1:]) if a]
+    if len(returns) < 5:
+        return None
+    return round(pstdev(returns), 6)
+
+
+def _options_snapshot(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+    summary = _summarize_options(payload.get("options_chain", []))
+    summary["liquidity_score"] = diagnostics(
+        {
+            "spread_pct": summary.get("spread_pct", 10) or 10,
+            "oi": summary.get("oi", 10000) or 10000,
+            "ivr": summary.get("ivr", 30) or 30,
+            "nbbo": summary.get("nbbo", "stable"),
+        }
+    )["liquidity_score"]
+    summary["vo_vol"] = _calc_vo_vol(payload.get("candles", []))
+    metadata = contract_metadata(summary.get("contracts", {}).get("primary"))
+    summary["dte_days"] = metadata.get("dte")
+    summary["side"] = metadata.get("side")
+    summary["bucket_key"] = option_bucket(symbol, summary.get("delta_target"), summary.get("dte_days"), summary.get("side"))
+    return summary
+
+
+async def _hydrate_options_metrics(symbol: str, options: dict[str, Any]) -> dict[str, Any]:
+    if not options.get("bucket_key"):
+        metadata = contract_metadata(options.get("contracts", {}).get("primary"))
+        options["dte_days"] = metadata.get("dte")
+        options["side"] = metadata.get("side")
+        options["bucket_key"] = option_bucket(symbol, options.get("delta_target"), options.get("dte_days"), options.get("side"))
+    bucket = options.get("bucket_key")
+    spread_baseline = await baseline_service.get_percentiles("spread_pct", bucket) if bucket else None
+    flicker_baseline = await baseline_service.get_percentiles("flicker_per_sec", bucket) if bucket else None
+    ivr_baseline = await baseline_service.get_percentiles("iv_rank", bucket) if bucket else None
+    vov_baseline = await baseline_service.get_percentiles("vo_vol", bucket) if bucket else None
+    options["spread_percentile_rank"] = percentile_rank(options.get("spread_pct"), spread_baseline)
+    options["flicker_percentile_rank"] = percentile_rank(options.get("flicker_per_sec"), flicker_baseline)
+    options["ivr_percentile_rank"] = percentile_rank(options.get("ivr"), ivr_baseline)
+    options["vo_vol_percentile_rank"] = percentile_rank(options.get("vo_vol"), vov_baseline)
+    options["spread_percentile_label"] = percentile_to_label(options.get("spread_percentile_rank"))
+    options["flicker_label"] = percentile_to_label(options.get("flicker_percentile_rank"))
+    options["liquidity_risk"] = _liquidity_risk_score(options)
+    return options
+
+
+def _index_bucket(symbol: str) -> str | None:
+    idx = ETF_INDEX.get(symbol)
+    if not idx:
+        return None
+    return f"IDX:{idx}"
+
+
+def _liquidity_risk_score(options: dict[str, Any]) -> float | None:
+    spread_rank = options.get("spread_percentile_rank")
+    flicker_rank = options.get("flicker_percentile_rank")
+    ivr = options.get("ivr")
+    oi = options.get("oi") or 0
+    spread_pct = options.get("spread_pct")
+    nbbo = (options.get("nbbo") or "unknown").lower()
+
+    def _score_from_rank(rank: float | None) -> float:
+        if rank is None:
+            return 60.0
+        rank = max(0.0, min(1.0, rank))
+        return (1 - rank) * 100
+
+    spread_component = _score_from_rank(spread_rank)
+    flicker_component = _score_from_rank(flicker_rank)
+    nbbo_component = {
+        "stable": 100,
+        "locked": 60,
+        "crossed": 40,
+    }.get(nbbo, 70)
+    nbbo_flicker = 0.5 * nbbo_component + 0.5 * flicker_component
+    oi_component = min(100.0, (oi / 5000) * 100)
+    ivr_component = 100 - min(100, abs((ivr or 50) - 50) * 2)
+    residual = max(0.0, 100 - (spread_pct or 0) * 8)
+    score = 0.4 * spread_component + 0.2 * nbbo_flicker + 0.15 * oi_component + 0.15 * ivr_component + 0.1 * residual
+    return round(min(max(score, 0.0), 100.0), 2)
 
 
 def _normalize(value: float, floor: float, ceiling: float) -> float:
@@ -180,6 +278,21 @@ def _calculate_penalties(payload: dict[str, Any], contributions: dict[str, float
     return penalties
 
 
+def _apply_percentile_penalties(options: dict[str, Any], penalties: dict[str, float]) -> None:
+    spread_rank = options.get("spread_percentile_rank")
+    flicker_rank = options.get("flicker_percentile_rank")
+    liquidity_risk = options.get("liquidity_risk")
+    if spread_rank is not None:
+        if spread_rank >= 0.85:
+            penalties["spread_percentile"] = -10
+        elif spread_rank >= 0.75:
+            penalties["spread_percentile"] = -6
+    if flicker_rank is not None and flicker_rank >= 0.75:
+        penalties["flicker"] = -5
+    if liquidity_risk is not None and liquidity_risk >= 70:
+        penalties["liquidity_risk"] = -7
+
+
 def _calculate_bonuses(contributions: dict[str, float], payload: dict[str, Any]) -> dict[str, float]:
     bonuses: dict[str, float] = {}
     if contributions["TrendStack"] > 0.7 and contributions["Patience"] > 0.6:
@@ -189,17 +302,6 @@ def _calculate_bonuses(contributions: dict[str, float], payload: dict[str, Any])
     return bonuses
 
 
-def _options_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
-    summary = _summarize_options(payload.get("options_chain", []))
-    summary["liquidity_score"] = diagnostics({
-        "spread_pct": summary.get("spread_pct", 10) or 10,
-        "oi": summary.get("oi", 10000) or 10000,
-        "ivr": summary.get("ivr", 30) or 30,
-        "nbbo": summary.get("nbbo", "stable"),
-    })["liquidity_score"]
-    return summary
-
-
 def _build_rationale(contributions: dict[str, float], penalties: dict[str, float]) -> dict[str, list[str]]:
     positives = sorted(contributions.items(), key=lambda kv: kv[1], reverse=True)[:2]
     negatives = sorted(penalties.items(), key=lambda kv: kv[1])[:2]
@@ -207,6 +309,27 @@ def _build_rationale(contributions: dict[str, float], penalties: dict[str, float
         "positives": [f"{name} strong" for name, _ in positives],
         "risks": [f"Penalty: {name}" for name, _ in negatives] or ["Monitoring latencies"],
     }
+
+
+async def _adjust_confidence(symbol: str, confidence: dict[str, float], options: dict[str, Any], market_micro: dict[str, Any]) -> dict[str, float]:
+    adjustment = 0.0
+    flicker_rank = options.get("flicker_percentile_rank") or 0.0
+    if flicker_rank >= 0.75:
+        adjustment += 0.04
+    vo_vol_rank = options.get("vo_vol_percentile_rank") or 0.0
+    if vo_vol_rank >= 0.75:
+        adjustment += 0.03
+    if options.get("liquidity_risk", 0) >= 70:
+        adjustment += 0.05
+    idx_bucket = _index_bucket(symbol)
+    if idx_bucket and market_micro:
+        baseline = await baseline_service.get_percentiles("micro_chop", idx_bucket)
+        if baseline and market_micro.get("microChop") is not None and market_micro["microChop"] >= baseline.p75:
+            adjustment += 0.04
+    adjustment = min(adjustment, 0.12)
+    confidence["p68"] = round(min(confidence["p68"] + adjustment, 0.99), 3)
+    confidence["p95"] = round(min(confidence["p95"] + adjustment * 1.5, 0.99), 3)
+    return confidence
 
 
 def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
@@ -239,6 +362,17 @@ def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             "nbbo": "stable",
             "liquidity_score": 70,
             "contracts": {"primary": None, "backups": []},
+            "flicker_per_sec": 1.2,
+            "spread_percentile_rank": 0.6,
+            "flicker_percentile_rank": 0.6,
+            "ivr_percentile_rank": 0.4,
+            "vo_vol_percentile_rank": 0.5,
+            "vo_vol": 0.001,
+            "dte_days": 5,
+            "bucket_key": "SPX:CALL:Delta[0.30-0.40]:DTE[3-7]",
+            "spread_percentile_label": "p60",
+            "flicker_label": "p60",
+            "liquidity_risk": 60,
         },
         rationale={"positives": ["Synthetic pipeline"], "risks": ["Waiting on live key"]},
         admin={"mode": "Standard", "overrides": {}, "marketMicro": _default_market_micro(), "last_1m_closes": []},
@@ -274,6 +408,7 @@ async def _persist_snapshot(symbol: str, tile: TileState, meta: dict[str, Any]) 
                 bonuses=tile.bonuses,
                 state=tile.band.label,
                 rationale=tile.rationale,
+                market_micro=tile.admin.get("marketMicro") if tile.admin else None,
             )
             session.add(snapshot)
             await session.commit()
@@ -286,6 +421,14 @@ async def merge_realtime_into_tile(symbol: str, deltas: dict[str, Any]) -> TileS
     if not tile:
         tile, _ = await build_tile(symbol)
         await state_store.set_state(symbol, tile)
+    if deltas.get("options"):
+        updated_options = dict(tile.options or {})
+        updated_options.update(deltas["options"])
+        updated_options = await _hydrate_options_metrics(symbol, updated_options)
+        tile.options = updated_options
+        penalties = dict(tile.penalties or {})
+        _apply_percentile_penalties(updated_options, penalties)
+        tile.penalties = penalties
     contributions = {item["name"]: item["score"] for item in tile.breakdown}
     market_micro = deltas.get("marketMicro") or {}
     alpha = 0.55
@@ -320,9 +463,7 @@ async def merge_realtime_into_tile(symbol: str, deltas: dict[str, Any]) -> TileS
 
     probability, band = aggregate_probability(contributions, penalties, bonuses)
     confidence = confidence_interval(int(probability * 100), 150, tile.regime)
-    if market_micro.get("microChop", 0) >= 0.6:
-        confidence["p68"] = min(confidence["p68"] + 0.02, 0.99)
-        confidence["p95"] = min(confidence["p95"] + 0.03, 0.99)
+    confidence = await _adjust_confidence(symbol, confidence, tile.options or {}, {**tile.admin.get("marketMicro", {}), **market_micro})
 
     tile.breakdown = [{"name": name, "score": round(score, 3)} for name, score in contributions.items()]
     tile.penalties = penalties
@@ -348,18 +489,22 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
         contributions, meta = _compute_contributions(symbol, payload)
         penalties = _calculate_penalties(payload, contributions)
         bonuses = _calculate_bonuses(contributions, payload)
+        _apply_percentile_penalties(options_snapshot, penalties)
         probability, band = aggregate_probability(contributions, penalties, bonuses)
         confidence = confidence_interval(int(probability * 100), 150, "Normal")
         history_tile = await state_store.get_state(symbol)
         history = history_tile.history[-2:] if history_tile else []
         history.append({"ts": datetime.now(timezone.utc).isoformat(), "score": probability * 100})
-        options_snapshot = _options_snapshot(payload)
+        options_snapshot = _options_snapshot(symbol, payload)
+        options_snapshot = await _hydrate_options_metrics(symbol, options_snapshot)
+        prev_micro = history_tile.admin.get("marketMicro") if history_tile and history_tile.admin else _default_market_micro()
         admin = {
             "mode": "Standard",
             "overrides": {},
-            "marketMicro": _default_market_micro(),
+            "marketMicro": prev_micro,
             "last_1m_closes": meta.get("series", {}).get("closes", []),
         }
+        confidence = await _adjust_confidence(symbol, confidence, options_snapshot, admin["marketMicro"])
         tile = TileState(
             symbol=symbol,
             regime="Fast" if probability > 0.8 else "Normal",
