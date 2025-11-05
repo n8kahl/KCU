@@ -31,6 +31,11 @@ async function postJSON<T>(path: string, body: unknown, init?: RequestInit): Pro
   return resp.json();
 }
 
+async function deleteJSON(path: string): Promise<void> {
+  const resp = await fetch(`${BACKEND}${path}`, { method: "DELETE" });
+  if (!resp.ok) throw new Error(`Request failed ${resp.status}`);
+}
+
 type WsPayload = { type?: string; data?: unknown };
 type WsStatus = "connecting" | "online" | "offline";
 
@@ -72,5 +77,38 @@ function usePolicyMutation() {
   });
 }
 
+function useAddTicker() {
+  const client = useQueryClient();
+  return useMutation<void, Error, { symbol: string }>({
+    mutationFn: ({ symbol }) => postJSON("/api/tickers", { symbol: symbol.trim().toUpperCase() }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["tickers"] });
+      client.invalidateQueries({ queryKey: ["tile"] });
+    },
+  });
+}
+
+function useRemoveTicker() {
+  const client = useQueryClient();
+  return useMutation<void, Error, { symbol: string }>({
+    mutationFn: ({ symbol }) => deleteJSON(`/api/tickers/${symbol}`),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["tickers"] });
+      client.invalidateQueries({ queryKey: ["tile"] });
+    },
+  });
+}
+
 export type { WhatIfResponse, WsStatus };
-export { BACKEND, connectWS, getJSON, postJSON, usePolicyMutation, useTickers, useTile, useWhatIf };
+export {
+  BACKEND,
+  connectWS,
+  getJSON,
+  postJSON,
+  usePolicyMutation,
+  useTickers,
+  useTile,
+  useWhatIf,
+  useAddTicker,
+  useRemoveTicker,
+};
