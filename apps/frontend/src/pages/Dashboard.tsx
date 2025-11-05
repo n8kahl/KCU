@@ -47,7 +47,7 @@ function Dashboard() {
             <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-10 text-center text-slate-400">No tiles available.</div>
           )}
         </section>
-        <div className="w-full lg:w-[360px] xl:w-[420px]">
+        <div className="w-full lg:w-[380px] xl:w-[420px]">
           <ActiveTrades />
         </div>
       </main>

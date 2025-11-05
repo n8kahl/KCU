@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import { ReactNode, useEffect, useMemo, useState } from "react";
+import MiniCandles from "./MiniCandles";
 import { formatContractId } from "../lib/format";
 import { useTrades } from "../store/trades";
 
@@ -79,32 +80,6 @@ function calcVolumeTrend(closes: number[] | undefined) {
   if (ratio > 1.02) return "High";
   if (ratio < 0.98) return "Low";
   return "Avg";
-}
-
-function MiniSparkline({ values, level }: { values?: number[]; level?: number | null }) {
-  if (!values || values.length < 2) {
-    return <div className="h-12 w-full rounded border border-slate-800 bg-slate-950/40 text-center text-[10px] text-slate-500">No data</div>;
-  }
-  const recent = values.slice(-16);
-  const min = Math.min(...recent);
-  const max = Math.max(...recent);
-  const span = max - min || 1;
-  const points = recent
-    .map((value, index) => {
-      const x = (index / (recent.length - 1)) * 100;
-      const y = ((max - value) / span) * 40;
-      return `${x},${y}`;
-    })
-    .join(" ");
-  const levelY = level ? ((max - level) / span) * 40 : null;
-  return (
-    <svg viewBox="0 0 100 40" className="h-12 w-full">
-      {levelY !== null && levelY >= 0 && levelY <= 40 && (
-        <line x1="0" y1={levelY} x2="100" y2={levelY} stroke="#64748b" strokeDasharray="4 3" strokeWidth="0.6" />
-      )}
-      <polyline points={points} fill="none" stroke="#34d399" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  );
 }
 
 function ContractsList({ tile }: { tile: TilePayload }) {
@@ -204,11 +179,11 @@ export default function TickerCard({ tile, now }: Props) {
       <div className="mt-4 grid gap-4 sm:grid-cols-3">
         <div>
           <p className="text-xs uppercase text-slate-400">Probability → Action</p>
-          <p className="text-3xl font-semibold">{prob}%</p>
+          <p className="text-3xl font-semibold transition-all duration-300">{prob}%</p>
         </div>
         <div>
           <p className="text-xs uppercase text-slate-400">Confidence p95</p>
-          <p className="text-2xl font-semibold">{confidence}%</p>
+          <p className="text-2xl font-semibold transition-all duration-300">{confidence}%</p>
         </div>
         <div>
           <p className="text-xs uppercase text-slate-400">ETA</p>
@@ -254,14 +229,17 @@ export default function TickerCard({ tile, now }: Props) {
             <BreakdownGrid breakdown={tile.breakdown} />
           </section>
           <section className="grid gap-3 text-xs text-slate-300 sm:grid-cols-2">
-            <InfoChip label="Spread" value={`${tile.options?.spread_pct ?? "--"}% (${tile.options?.spread_percentile_label || "p--"})`} />
+            <InfoChip label="Spread" value={`${tile.options?.spread_pct?.toFixed(2) ?? "--"}% (${tile.options?.spread_percentile_label || "p--"})`} />
             <InfoChip label="NBBO" value={tile.options?.nbbo || "--"} />
             <InfoChip label="Flicker" value={`${tile.options?.flicker_per_sec ?? "--"}/s`} />
             <InfoChip label="Liquidity" value={tile.options?.liquidity_risk ?? "--"} />
           </section>
-          <section>
-            <MiniSparkline values={mtfCloses} level={levelInfo?.price ?? null} />
-          </section>
+          {Array.isArray(mtfCloses) && mtfCloses.length >= 3 && (
+            <section>
+              <div className="text-xs uppercase tracking-wide text-slate-400">Mini flow</div>
+              <MiniCandles closes={mtfCloses} levels={(tile.admin?.levels as any) || []} managing={tile.admin?.managing} />
+            </section>
+          )}
         </div>
       </details>
     </article>
