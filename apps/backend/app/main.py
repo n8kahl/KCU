@@ -16,6 +16,7 @@ from app.db.session import engine
 from app.services.realtime_engine import start_realtime
 from app.services.state_store import state_store
 from app.services.tile_engine import run_tile_pipeline
+from app.services.watchlist import watchlist_service
 from app.ws.manager import ConnectionManager
 
 configure_logging()
@@ -41,6 +42,7 @@ async def startup_event() -> None:
         logger.info("DB connection OK")
     except Exception:
         logger.exception("DB connection FAILED")
+    await watchlist_service.seed_if_empty()
     asyncio.create_task(manager.heartbeat())
     asyncio.create_task(run_tile_pipeline(manager))
     asyncio.create_task(start_realtime(manager))

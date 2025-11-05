@@ -7,7 +7,6 @@ from statistics import mean, pstdev
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.adapters.massive import MassiveClient
 from app.core.settings import settings
@@ -27,10 +26,12 @@ from app.domain.scoring import aggregate_probability, confidence_interval
 from app.domain.types import TileState
 from app.services.baselines import baseline_service, percentile_rank, percentile_to_label
 from app.services.data_cache import quote_cache
+from app.services.ingest import poll_quotes, warm_candles
 from app.services.state_machine import StateMachine
 from app.services.state_store import state_store
 from app.services.timing import get_timing_context
 from app.services.tp_manager import tp_manager
+from app.services.watchlist import watchlist_service
 from app.ws.manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ def _level_prev(level: Levels | None) -> dict[str, Any]:
                 "l": _row_to_float(level.prior_low),
                 "o": _row_to_float(level.open_print),
             }
-        ]
+        ],
     }
 
 
@@ -87,7 +88,9 @@ def _level_premarket(level: Levels | None) -> dict[str, Any]:
 def _option_row(row: OptionSnapshot) -> dict[str, Any]:
     bid = _row_to_float(row.bid)
     ask = _row_to_float(row.ask)
-    mid = _row_to_float(row.mid) or ((bid + ask) / 2 if bid is not None and ask is not None else None)
+    mid = _row_to_float(row.mid) or (
+        (bid + ask) / 2 if bid is not None and ask is not None else None
+    )
     spread_pct = None
     if mid and bid is not None and ask is not None and mid != 0:
         spread_pct = round(((ask - bid) / mid) * 100, 4)
@@ -149,7 +152,9 @@ async def _load_cached_payload(symbol: str) -> dict[str, Any] | None:
             .limit(200)
         )
         candle_rows = list(reversed((await session.execute(candles_stmt)).scalars().all()))
-        level_stmt = select(Levels).where(Levels.ticker == symbol).order_by(Levels.day.desc()).limit(1)
+        level_stmt = (
+            select(Levels).where(Levels.ticker == symbol).order_by(Levels.day.desc()).limit(1)
+        )
         level_row = (await session.execute(level_stmt)).scalar_one_or_none()
         option_stmt = (
             select(OptionSnapshot)
@@ -261,7 +266,9 @@ def _options_snapshot(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
     metadata = contract_metadata(summary.get("contracts", {}).get("primary"))
     summary["dte_days"] = metadata.get("dte")
     summary["side"] = metadata.get("side")
-    summary["bucket_key"] = option_bucket(symbol, summary.get("delta_target"), summary.get("dte_days"), summary.get("side"))
+    summary["bucket_key"] = option_bucket(
+        symbol, summary.get("delta_target"), summary.get("dte_days"), summary.get("side")
+    )
     return summary
 
 
@@ -270,14 +277,22 @@ async def _hydrate_options_metrics(symbol: str, options: dict[str, Any]) -> dict
         metadata = contract_metadata(options.get("contracts", {}).get("primary"))
         options["dte_days"] = metadata.get("dte")
         options["side"] = metadata.get("side")
-        options["bucket_key"] = option_bucket(symbol, options.get("delta_target"), options.get("dte_days"), options.get("side"))
+        options["bucket_key"] = option_bucket(
+            symbol, options.get("delta_target"), options.get("dte_days"), options.get("side")
+        )
     bucket = options.get("bucket_key")
-    spread_baseline = await baseline_service.get_percentiles("spread_pct", bucket) if bucket else None
-    flicker_baseline = await baseline_service.get_percentiles("flicker_per_sec", bucket) if bucket else None
+    spread_baseline = (
+        await baseline_service.get_percentiles("spread_pct", bucket) if bucket else None
+    )
+    flicker_baseline = (
+        await baseline_service.get_percentiles("flicker_per_sec", bucket) if bucket else None
+    )
     ivr_baseline = await baseline_service.get_percentiles("iv_rank", bucket) if bucket else None
     vov_baseline = await baseline_service.get_percentiles("vo_vol", bucket) if bucket else None
     options["spread_percentile_rank"] = percentile_rank(options.get("spread_pct"), spread_baseline)
-    options["flicker_percentile_rank"] = percentile_rank(options.get("flicker_per_sec"), flicker_baseline)
+    options["flicker_percentile_rank"] = percentile_rank(
+        options.get("flicker_per_sec"), flicker_baseline
+    )
     options["ivr_percentile_rank"] = percentile_rank(options.get("ivr"), ivr_baseline)
     options["vo_vol_percentile_rank"] = percentile_rank(options.get("vo_vol"), vov_baseline)
     options["spread_percentile_label"] = percentile_to_label(options.get("spread_percentile_rank"))
@@ -318,7 +333,13 @@ def _liquidity_risk_score(options: dict[str, Any]) -> float | None:
     oi_component = min(100.0, (oi / 5000) * 100)
     ivr_component = 100 - min(100, abs((ivr or 50) - 50) * 2)
     residual = max(0.0, 100 - (spread_pct or 0) * 8)
-    score = 0.4 * spread_component + 0.2 * nbbo_flicker + 0.15 * oi_component + 0.15 * ivr_component + 0.1 * residual
+    score = (
+        0.4 * spread_component
+        + 0.2 * nbbo_flicker
+        + 0.15 * oi_component
+        + 0.15 * ivr_component
+        + 0.1 * residual
+    )
     return round(min(max(score, 0.0), 100.0), 2)
 
 
@@ -329,7 +350,9 @@ def _normalize(value: float, floor: float, ceiling: float) -> float:
     return max(0.0, min(1.0, (value - floor) / span))
 
 
-def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[str, float], dict[str, Any]]:
+def _compute_contributions(
+    symbol: str, payload: dict[str, Any]
+) -> tuple[dict[str, float], dict[str, Any]]:
     candles = payload.get("candles", [])
     closes = [c.get("c") for c in candles if c.get("c")]
     if not closes:
@@ -368,12 +391,22 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
         {"label": "ORB Low", "price": orb_low},
     ]
 
-    last_candle = candles[-1] if candles else {"o": last_price, "c": last_price, "h": last_price, "l": last_price, "v": 0}
+    last_candle = (
+        candles[-1]
+        if candles
+        else {"o": last_price, "c": last_price, "h": last_price, "l": last_price, "v": 0}
+    )
     body = abs(last_candle.get("c", last_price) - last_candle.get("o", last_price))
     range_ = (last_candle.get("h", last_price) - last_candle.get("l", last_price)) or 1
     body_pct = body / range_
-    wick_ratio = (last_candle.get("h", last_price) - last_candle.get("c", last_price) + (last_candle.get("o", last_price) - last_candle.get("l", last_price))) or 1
-    patience = patience_candle_quality(body_pct, wick_ratio, _normalize(last_candle.get("v", 0), 0, 1))
+    wick_ratio = (
+        last_candle.get("h", last_price)
+        - last_candle.get("c", last_price)
+        + (last_candle.get("o", last_price) - last_candle.get("l", last_price))
+    ) or 1
+    patience = patience_candle_quality(
+        body_pct, wick_ratio, _normalize(last_candle.get("v", 0), 0, 1)
+    )
 
     adr = (max(closes) - min(closes)) / prior_close if prior_close else 0.01
     range_pct_adr = (orb_high - orb_low) / max(prior_close * adr, 1e-6)
@@ -384,7 +417,7 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
     spread_proxy = payload.get("quote", {}).get("spread_pct_of_mid") or 5
     nbbo_quality = payload.get("quote", {}).get("nbbo_quality", "stable")
     oi_depth = sum((c.get("oi") or 0) for c in payload.get("options_chain", [])[:5])
-    iv_rank = _normalize(payload.get("quote", {}).get("iv" , 30) or 30, 0, 100) * 100
+    iv_rank = _normalize(payload.get("quote", {}).get("iv", 30) or 30, 0, 100) * 100
     options = options_health_base(spread_proxy, oi_depth or 10000, iv_rank, nbbo_quality)
 
     breadth = _normalize(last_price - prior_close, -2, 2)
@@ -413,7 +446,9 @@ def _compute_contributions(symbol: str, payload: dict[str, Any]) -> tuple[dict[s
     return contributions, meta
 
 
-def _calculate_penalties(payload: dict[str, Any], contributions: dict[str, float]) -> dict[str, float]:
+def _calculate_penalties(
+    payload: dict[str, Any], contributions: dict[str, float]
+) -> dict[str, float]:
     penalties: dict[str, float] = {}
     spread = payload.get("quote", {}).get("spread_pct_of_mid") or 0
     if spread > 8:
@@ -440,16 +475,23 @@ def _apply_percentile_penalties(options: dict[str, Any], penalties: dict[str, fl
         penalties["liquidity_risk"] = -7
 
 
-def _calculate_bonuses(contributions: dict[str, float], payload: dict[str, Any]) -> dict[str, float]:
+def _calculate_bonuses(
+    contributions: dict[str, float], payload: dict[str, Any]
+) -> dict[str, float]:
     bonuses: dict[str, float] = {}
     if contributions["TrendStack"] > 0.7 and contributions["Patience"] > 0.6:
         bonuses["king_queen"] = 8
-    if payload.get("quote", {}).get("spread_pct_of_mid") and payload["quote"]["spread_pct_of_mid"] < 4:
+    if (
+        payload.get("quote", {}).get("spread_pct_of_mid")
+        and payload["quote"]["spread_pct_of_mid"] < 4
+    ):
         bonuses["liquidity"] = 4
     return bonuses
 
 
-def _build_rationale(contributions: dict[str, float], penalties: dict[str, float]) -> dict[str, list[str]]:
+def _build_rationale(
+    contributions: dict[str, float], penalties: dict[str, float]
+) -> dict[str, list[str]]:
     positives = sorted(contributions.items(), key=lambda kv: kv[1], reverse=True)[:2]
     negatives = sorted(penalties.items(), key=lambda kv: kv[1])[:2]
     return {
@@ -458,7 +500,9 @@ def _build_rationale(contributions: dict[str, float], penalties: dict[str, float
     }
 
 
-async def _adjust_confidence(symbol: str, confidence: dict[str, float], options: dict[str, Any], market_micro: dict[str, Any]) -> dict[str, float]:
+async def _adjust_confidence(
+    symbol: str, confidence: dict[str, float], options: dict[str, Any], market_micro: dict[str, Any]
+) -> dict[str, float]:
     adjustment = 0.0
     flicker_rank = options.get("flicker_percentile_rank") or 0.0
     if flicker_rank >= 0.75:
@@ -471,7 +515,11 @@ async def _adjust_confidence(symbol: str, confidence: dict[str, float], options:
     idx_bucket = _index_bucket(symbol)
     if idx_bucket and market_micro:
         baseline = await baseline_service.get_percentiles("micro_chop", idx_bucket)
-        if baseline and market_micro.get("microChop") is not None and market_micro["microChop"] >= baseline.p75:
+        if (
+            baseline
+            and market_micro.get("microChop") is not None
+            and market_micro["microChop"] >= baseline.p75
+        ):
             adjustment += 0.04
     adjustment = min(adjustment, 0.12)
     confidence["p68"] = round(min(confidence["p68"] + adjustment, 0.99), 3)
@@ -568,7 +616,7 @@ async def _persist_snapshot(symbol: str, tile: TileState, meta: dict[str, Any]) 
             )
             session.add(snapshot)
             await session.commit()
-    except SQLAlchemyError as exc:
+    except Exception as exc:  # pragma: no cover - optional DB path
         logger.warning("snapshot-persist-failed", extra={"symbol": symbol, "error": str(exc)})
 
 
@@ -594,13 +642,17 @@ async def merge_realtime_into_tile(symbol: str, deltas: dict[str, Any]) -> TileS
     if "microChop" in market_micro:
         micro_signals.append(max(0.0, 1.0 - float(market_micro["microChop"])))
     if "divergenceZ" in market_micro:
-        micro_signals.append(max(0.0, 1.0 - min(1.0, abs(float(market_micro["divergenceZ"])) / 1.5)))
+        micro_signals.append(
+            max(0.0, 1.0 - min(1.0, abs(float(market_micro["divergenceZ"])) / 1.5))
+        )
     if micro_signals:
         micro_sum = 0.0
         for idx, value in enumerate(sorted(micro_signals, reverse=True)):
             micro_sum += value / (1 + alpha * idx)
         target = micro_sum / len(micro_signals)
-        contributions["Market"] = max(0.0, min(1.0, 0.6 * contributions.get("Market", 0.5) + 0.4 * target))
+        contributions["Market"] = max(
+            0.0, min(1.0, 0.6 * contributions.get("Market", 0.5) + 0.4 * target)
+        )
 
     penalties = dict(tile.penalties or {})
     if market_micro.get("microChop", 0) and market_micro["microChop"] >= 0.6:
@@ -619,15 +671,26 @@ async def merge_realtime_into_tile(symbol: str, deltas: dict[str, Any]) -> TileS
 
     probability, band = aggregate_probability(contributions, penalties, bonuses)
     confidence = confidence_interval(int(probability * 100), 150, tile.regime)
-    confidence = await _adjust_confidence(symbol, confidence, tile.options or {}, {**tile.admin.get("marketMicro", {}), **market_micro})
+    confidence = await _adjust_confidence(
+        symbol,
+        confidence,
+        tile.options or {},
+        {**tile.admin.get("marketMicro", {}), **market_micro},
+    )
 
-    tile.breakdown = [{"name": name, "score": round(score, 3)} for name, score in contributions.items()]
+    tile.breakdown = [
+        {"name": name, "score": round(score, 3)} for name, score in contributions.items()
+    ]
     tile.penalties = penalties
     tile.bonuses = bonuses
     tile.probability_to_action = probability
     tile.band = band
     tile.confidence = confidence
-    market_admin = tile.admin.get("marketMicro", _default_market_micro()) if tile.admin else _default_market_micro()
+    market_admin = (
+        tile.admin.get("marketMicro", _default_market_micro())
+        if tile.admin
+        else _default_market_micro()
+    )
     merged_market = {**market_admin, **market_micro}
     admin = dict(tile.admin or {})
     admin["marketMicro"] = merged_market
@@ -668,7 +731,11 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
         options_snapshot = _options_snapshot(symbol, payload)
         options_snapshot = await _hydrate_options_metrics(symbol, options_snapshot)
         _apply_percentile_penalties(options_snapshot, penalties)
-        prev_micro = history_tile.admin.get("marketMicro") if history_tile and history_tile.admin else _default_market_micro()
+        prev_micro = (
+            history_tile.admin.get("marketMicro")
+            if history_tile and history_tile.admin
+            else _default_market_micro()
+        )
         timing = get_timing_context(datetime.now(timezone.utc))
         last_price = meta.get("last_price")
         admin = {
@@ -691,7 +758,9 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
                 "last_price": last_price,
             },
         )
-        confidence = await _adjust_confidence(symbol, confidence, options_snapshot, admin["marketMicro"])
+        confidence = await _adjust_confidence(
+            symbol, confidence, options_snapshot, admin["marketMicro"]
+        )
         plan = await tp_manager.on_tick(
             symbol,
             last_price,
@@ -709,7 +778,9 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             probability_to_action=probability,
             band=band,
             confidence=confidence,
-            breakdown=[{"name": name, "score": round(score, 3)} for name, score in contributions.items()],
+            breakdown=[
+                {"name": name, "score": round(score, 3)} for name, score in contributions.items()
+            ],
             options=options_snapshot,
             rationale=_build_rationale(contributions, penalties),
             admin=admin,
@@ -735,11 +806,20 @@ async def refresh_symbol(symbol: str, manager: ConnectionManager | None = None) 
 
 
 async def run_tile_pipeline(manager: ConnectionManager | None = None) -> None:
-    if not settings.watchlist:
-        return
-    # small delay to allow startup wiring
+    await watchlist_service.seed_if_empty()
     await asyncio.sleep(2)
     while True:
-        for symbol in settings.watchlist:
+        symbols = await watchlist_service.list()
+        if not symbols:
+            await asyncio.sleep(5)
+            continue
+        for symbol in symbols:
+            await warm_candles(symbol)
+            await poll_quotes(symbol)
             await refresh_symbol(symbol, manager)
-        await asyncio.sleep(REFRESH_SECONDS)
+        evt = watchlist_service.event()
+        try:
+            evt.clear()
+            await asyncio.wait_for(evt.wait(), timeout=REFRESH_SECONDS)
+        except asyncio.TimeoutError:
+            pass

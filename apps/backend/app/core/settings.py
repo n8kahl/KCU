@@ -9,16 +9,23 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     port: int = Field(default=3001, validation_alias="PORT")
-    database_url: str = Field(default="postgresql+asyncpg://localhost/kcu", validation_alias="DATABASE_URL")
+    database_url: str = Field(
+        default="postgresql+asyncpg://localhost/kcu", validation_alias="DATABASE_URL"
+    )
     redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
     massive_api_key: str | None = Field(default=None, validation_alias="MASSIVE_API_KEY")
+    massive_connect_timeout: float = Field(default=6.0, validation_alias="MASSIVE_CONNECT_TIMEOUT")
+    massive_read_timeout: float = Field(default=15.0, validation_alias="MASSIVE_READ_TIMEOUT")
+    massive_pool_size: int = Field(default=8, validation_alias="MASSIVE_POOL_SIZE")
     discord_webhook_url: str | None = Field(default=None, validation_alias="DISCORD_WEBHOOK_URL")
     frontend_origin: str = Field(
         default="https://kcu-ui-production.up.railway.app", validation_alias="FRONTEND_ORIGIN"
     )
     service_env: str = Field(default="development", validation_alias="SERVICE_ENV")
     api_key: str = Field(default="dev-admin-key", validation_alias="API_KEY")
-    watchlist_raw: str = Field(default="SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL", validation_alias="WATCHLIST")
+    watchlist_raw: str = Field(
+        default="SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL", validation_alias="WATCHLIST"
+    )
     options_data_enabled: bool = Field(default=True, validation_alias="OPTIONS_DATA_ENABLED")
 
     class Config:
