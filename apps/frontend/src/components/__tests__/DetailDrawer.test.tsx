@@ -10,6 +10,7 @@ vi.mock("../../api/client", () => ({
 
 const baseTile: Tile = {
   symbol: "SPY",
+  regime: "Momentum",
   grade: "A",
   confidence_score: 95,
   confidence: {},

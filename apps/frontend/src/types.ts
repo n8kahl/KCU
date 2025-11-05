@@ -55,6 +55,7 @@ export type AlertPayload = {
 
 export type Tile = {
   symbol: string;
+  regime: string;
   grade: string;
   confidence_score: number;
   confidence: Record<string, number>;
