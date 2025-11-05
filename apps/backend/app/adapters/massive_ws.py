@@ -8,6 +8,7 @@ from contextlib import suppress
 from typing import Awaitable, Callable
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,12 @@ async def _subscription_sender(ws, queue: asyncio.Queue[str]) -> None:
     while True:
         params = await queue.get()
         payload = json.dumps({"action": "subscribe", "params": params})
-        await ws.send(payload)
+        try:
+            await ws.send(payload)
+        except ConnectionClosed:
+            # push back so reconnect can re-send
+            queue.put_nowait(params)
+            break
 
 
 async def run_massive_ws(
@@ -82,7 +88,7 @@ async def run_massive_ws(
         finally:
             if sender_task:
                 sender_task.cancel()
-                with suppress(asyncio.CancelledError):
+                with suppress(asyncio.CancelledError, ConnectionClosed):
                     await sender_task
 
 
