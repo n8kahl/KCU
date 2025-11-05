@@ -79,8 +79,8 @@ function usePolicyMutation() {
 
 function useAddTicker() {
   const client = useQueryClient();
-  return useMutation<void, Error, { symbol: string }>({
-    mutationFn: ({ symbol }) => postJSON("/api/tickers", { symbol: symbol.trim().toUpperCase() }),
+  return useMutation<void, Error, { ticker: string }>({
+    mutationFn: ({ ticker }) => postJSON("/api/tickers", { ticker: ticker.trim().toUpperCase() }),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["tickers"] });
       client.invalidateQueries({ queryKey: ["tile"] });
@@ -90,8 +90,8 @@ function useAddTicker() {
 
 function useRemoveTicker() {
   const client = useQueryClient();
-  return useMutation<void, Error, { symbol: string }>({
-    mutationFn: ({ symbol }) => deleteJSON(`/api/tickers/${symbol}`),
+  return useMutation<void, Error, { ticker: string }>({
+    mutationFn: ({ ticker }) => deleteJSON(`/api/tickers/${ticker}`),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["tickers"] });
       client.invalidateQueries({ queryKey: ["tile"] });

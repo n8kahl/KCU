@@ -12,13 +12,13 @@ function WatchlistManager() {
     event.preventDefault();
     const cleaned = symbolInput.trim().toUpperCase();
     if (!cleaned || addMutation.isPending) return;
-    addMutation.mutate({ symbol: cleaned });
+    addMutation.mutate({ ticker: cleaned });
     setSymbolInput("");
   };
 
   const handleRemove = (symbol: string) => {
     if (removeMutation.isPending) return;
-    removeMutation.mutate({ symbol });
+    removeMutation.mutate({ ticker: symbol });
   };
 
   return (

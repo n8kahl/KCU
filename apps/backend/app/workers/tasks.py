@@ -12,6 +12,7 @@ from app.workers.celery_app import app
 
 _LOOP: asyncio.AbstractEventLoop | None = None
 _LOOP_LOCK = Lock()
+TASK_STAGGER_SECONDS = 0.25
 
 
 def _get_worker_loop() -> asyncio.AbstractEventLoop:
@@ -32,13 +33,13 @@ def _run_async(coro: Awaitable[None]) -> None:
 async def _ingest_candles() -> None:
     for ticker in settings.watchlist:
         await warm_candles(ticker)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(TASK_STAGGER_SECONDS)
 
 
 async def _poll_options() -> None:
     for ticker in settings.watchlist:
         await poll_quotes(ticker)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(TASK_STAGGER_SECONDS)
 
 
 async def _refresh_watchlist() -> None:

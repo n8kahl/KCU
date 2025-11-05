@@ -132,7 +132,13 @@ class MassiveClient:
         if not settings.massive_api_key:
             raise RuntimeError("Massive API key required")
         # pagination disabled to avoid iterating massive payloads when we only need latest window
-        self._client = RESTClient(api_key=settings.massive_api_key, pagination=False)
+        self._client = RESTClient(
+            api_key=settings.massive_api_key,
+            pagination=False,
+            num_pools=50,
+            read_timeout=15.0,
+            retries=5,
+        )
 
     async def __aenter__(self) -> "MassiveClient":
         return self

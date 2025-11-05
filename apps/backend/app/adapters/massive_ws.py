@@ -35,6 +35,17 @@ def _normalize_ts(value: int | float | str | None) -> int | None:
         return None
 
 
+def _coerce_ts(value: int | float | str | None) -> int | None:
+    return _normalize_ts(value)
+
+
+def _strip_index_prefix(symbol: str | None) -> str | None:
+    if symbol is None:
+        return None
+    text = str(symbol)
+    return text.removeprefix("I:") if text.startswith("I:") else text
+
+
 async def _subscription_sender(ws, queue: asyncio.Queue[str]) -> None:
     while True:
         params = await queue.get()
@@ -141,6 +152,13 @@ def _normalize_event(msg: dict) -> dict | None:
             "c": msg.get("val"),
             "t": _normalize_ts(msg.get("t")),
         }
+    if ev == "AS":
+        price = msg.get("c") or msg.get("close") or msg.get("val")
+        ts = _coerce_ts(msg.get("t") or msg.get("e") or msg.get("ts"))
+        symbol = _strip_index_prefix(msg.get("sym") or msg.get("T") or msg.get("symbol"))
+        if price is None or ts is None or not symbol:
+            return None
+        return {"kind": "index_value", "symbol": symbol, "c": float(price), "t": ts}
     if ev == "Q" and str(msg.get("sym", "")).startswith("O:"):
         bp = msg.get("bp")
         ap = msg.get("ap")
