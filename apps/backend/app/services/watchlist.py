@@ -29,8 +29,11 @@ class WatchlistService:
             self._db_warning_logged = False
 
     async def _ensure_table(self) -> None:
+        if self._table_ready:
+            return
         async with engine.begin() as conn:
             await conn.run_sync(WatchlistItem.__table__.create, checkfirst=True)
+        self._table_ready = True
 
     def _table_missing(self, exc: Exception) -> bool:
         message = str(exc).lower()
@@ -70,50 +73,62 @@ class WatchlistService:
                 return
 
     async def list(self) -> List[str]:
-        try:
-            async with async_session() as session:
-                stmt: Select = select(WatchlistItem).order_by(
-                    WatchlistItem.position.asc(), WatchlistItem.ticker.asc()
-                )
-                rows = (await session.execute(stmt)).scalars().all()
-            symbols = [row.ticker.upper() for row in rows]
-            if symbols:
-                self._memory = symbols
-            self._clear_db_warning()
-            return symbols or list(self._memory)
-        except (ProgrammingError, OperationalError) as exc:  # pragma: no cover - degraded env
-            if self._table_missing(exc):
-                await self._ensure_table()
-                return await self.list()
-            self._log_db_warning("watchlist-list-failed", str(exc))
-            return list(self._memory)
-        except Exception as exc:  # pragma: no cover
-            self._log_db_warning("watchlist-list-failed", str(exc))
-            return list(self._memory)
+        ensured = False
+        while True:
+            try:
+                async with async_session() as session:
+                    stmt: Select = select(WatchlistItem).order_by(
+                        WatchlistItem.position.asc(), WatchlistItem.ticker.asc()
+                    )
+                    rows = (await session.execute(stmt)).scalars().all()
+                symbols = [row.ticker.upper() for row in rows]
+                if symbols:
+                    self._memory = symbols
+                self._table_ready = True
+                self._clear_db_warning()
+                return symbols or list(self._memory)
+            except (ProgrammingError, OperationalError) as exc:  # pragma: no cover - degraded env
+                if self._table_missing(exc) and not ensured:
+                    ensured = True
+                    await self._ensure_table()
+                    continue
+                self._log_db_warning("watchlist-list-failed", str(exc))
+                return list(self._memory)
+            except Exception as exc:  # pragma: no cover
+                self._log_db_warning("watchlist-list-failed", str(exc))
+                return list(self._memory)
 
     async def add(self, ticker: str) -> List[str]:
         ticker = ticker.upper()
-        try:
-            async with async_session() as session:
-                positions = (await session.execute(select(WatchlistItem.position))).scalars().all()
-                next_pos = (max(positions) + 1) if positions else 0
-                try:
-                    await session.execute(
-                        insert(WatchlistItem).values({"ticker": ticker, "position": next_pos})
+        ensured = False
+        while True:
+            try:
+                async with async_session() as session:
+                    positions = (
+                        (await session.execute(select(WatchlistItem.position))).scalars().all()
                     )
-                    await session.commit()
-                except Exception:
-                    await session.rollback()
-            self._event.set()
-            self._clear_db_warning()
-            return await self.list()
-        except (ProgrammingError, OperationalError) as exc:  # pragma: no cover
-            if self._table_missing(exc):
-                await self._ensure_table()
-                return await self.add(ticker)
-            self._log_db_warning("watchlist-add-failed", str(exc))
-        except Exception as exc:  # pragma: no cover
-            self._log_db_warning("watchlist-add-failed", str(exc))
+                    next_pos = (max(positions) + 1) if positions else 0
+                    try:
+                        await session.execute(
+                            insert(WatchlistItem).values({"ticker": ticker, "position": next_pos})
+                        )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                self._event.set()
+                self._table_ready = True
+                self._clear_db_warning()
+                return await self.list()
+            except (ProgrammingError, OperationalError) as exc:  # pragma: no cover
+                if self._table_missing(exc) and not ensured:
+                    ensured = True
+                    await self._ensure_table()
+                    continue
+                self._log_db_warning("watchlist-add-failed", str(exc))
+                break
+            except Exception as exc:  # pragma: no cover
+                self._log_db_warning("watchlist-add-failed", str(exc))
+                break
         if ticker not in self._memory:
             self._memory.append(ticker)
         self._event.set()
@@ -121,20 +136,28 @@ class WatchlistService:
 
     async def remove(self, ticker: str) -> List[str]:
         ticker = ticker.upper()
-        try:
-            async with async_session() as session:
-                await session.execute(delete(WatchlistItem).where(WatchlistItem.ticker == ticker))
-                await session.commit()
-            self._event.set()
-            self._clear_db_warning()
-            return await self.list()
-        except (ProgrammingError, OperationalError) as exc:  # pragma: no cover
-            if self._table_missing(exc):
-                await self._ensure_table()
-                return await self.remove(ticker)
-            self._log_db_warning("watchlist-remove-failed", str(exc))
-        except Exception as exc:  # pragma: no cover
-            self._log_db_warning("watchlist-remove-failed", str(exc))
+        ensured = False
+        while True:
+            try:
+                async with async_session() as session:
+                    await session.execute(
+                        delete(WatchlistItem).where(WatchlistItem.ticker == ticker)
+                    )
+                    await session.commit()
+                self._event.set()
+                self._table_ready = True
+                self._clear_db_warning()
+                return await self.list()
+            except (ProgrammingError, OperationalError) as exc:  # pragma: no cover
+                if self._table_missing(exc) and not ensured:
+                    ensured = True
+                    await self._ensure_table()
+                    continue
+                self._log_db_warning("watchlist-remove-failed", str(exc))
+                break
+            except Exception as exc:  # pragma: no cover
+                self._log_db_warning("watchlist-remove-failed", str(exc))
+                break
         self._memory = [t for t in self._memory if t != ticker]
         self._event.set()
         return list(self._memory)
