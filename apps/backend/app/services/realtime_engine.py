@@ -70,7 +70,7 @@ async def _sync_option_contracts() -> None:
             primary = bundle.get("primary")
             backups: List[str] = bundle.get("backups") or []
             for contract in [primary, *backups]:
-                if contract and any(contract.startswith(prefix) for prefix in ("O:SPX", "O:NDX")):
+                if contract and contract.startswith("O:"):
                     contracts.add(contract)
                     mapping.setdefault(contract, set()).add(tile.symbol)
         for contract in contracts:
