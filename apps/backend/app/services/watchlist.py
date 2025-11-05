@@ -18,6 +18,7 @@ class WatchlistService:
         self._logger = logging.getLogger(__name__)
         self._memory = [ticker.upper() for ticker in settings.watchlist]
         self._db_warning_logged = False
+        self._table_ready = False
 
     def _log_db_warning(self, key: str, error: str) -> None:
         if not self._db_warning_logged:
