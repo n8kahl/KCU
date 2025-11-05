@@ -36,7 +36,7 @@ from app.services.watchlist import watchlist_service
 from app.ws.manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
-REFRESH_SECONDS = 60
+REFRESH_SECONDS = 30
 state_machine = StateMachine()
 DB_TIMEFRAME = "1m"
 WARM_INTERVAL_SECONDS = 300
@@ -375,9 +375,11 @@ def _compute_contributions(
     symbol: str, payload: dict[str, Any]
 ) -> tuple[dict[str, float], dict[str, Any]]:
     candles = payload.get("candles", [])
-    closes = [c.get("c") for c in candles if c.get("c")]
     quote_price = _quote_price(payload)
-    if len(closes) < 2 and quote_price:
+    closes = [c.get("c") for c in candles if c.get("c")]
+    if quote_price is not None:
+        closes = [*closes, quote_price] if closes else [quote_price]
+    if len(closes) < 2 and quote_price is not None:
         closes = [quote_price * 0.999, quote_price]
     if not closes:
         closes = [1.0, 1.0]
@@ -603,6 +605,7 @@ def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             "timing": timing,
             "lastPrice": 0.0,
             "orb": {"range_pct": 0.3, "retest_success": False},
+            "levels": [],
         },
         timestamps={"updated": now.isoformat()},
         eta_seconds=60,
@@ -770,6 +773,7 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             "timing": timing,
             "lastPrice": last_price,
             "orb": meta.get("orb"),
+            "levels": meta.get("levels", []),
         }
         await tp_manager.update_context(
             symbol,
