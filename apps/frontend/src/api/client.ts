@@ -32,10 +32,15 @@ async function postJSON<T>(path: string, body: unknown, init?: RequestInit): Pro
 }
 
 type WsPayload = { type?: string; data?: unknown };
+type WsStatus = "connecting" | "online" | "offline";
 
-function connectWS(onMessage: (payload: WsPayload) => void) {
+function connectWS(onMessage: (payload: WsPayload) => void, onStatus?: (status: WsStatus) => void) {
   const wsUrl = BACKEND.replace(/^http/, "ws") + "/ws/stream";
   const socket = new WebSocket(wsUrl);
+  onStatus?.("connecting");
+  socket.onopen = () => onStatus?.("online");
+  socket.onclose = () => onStatus?.("offline");
+  socket.onerror = () => onStatus?.("offline");
   socket.onmessage = (event) => onMessage(JSON.parse(event.data));
   return socket;
 }
@@ -67,5 +72,5 @@ function usePolicyMutation() {
   });
 }
 
-export type { WhatIfResponse };
+export type { WhatIfResponse, WsStatus };
 export { BACKEND, connectWS, getJSON, postJSON, usePolicyMutation, useTickers, useTile, useWhatIf };
