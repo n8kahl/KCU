@@ -73,6 +73,7 @@ export type Tile = {
     orb?: Record<string, any>;
     levels?: KeyLevel[];
     atr?: number;
+    last_1m_closes?: number[];
   };
   timestamps: { updated: string };
   eta_seconds?: number | null;

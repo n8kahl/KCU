@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { useMemo } from "react";
-import MicroStructureChart from "./MicroStructureChart";
+import MiniCandles from "./MiniCandles";
 import type { Tile } from "../types";
 
 type Props = {
@@ -16,6 +16,9 @@ function formatDelta(delta?: Tile["delta_to_entry"]) {
   return `${dollars} / ${percent}`;
 }
 
+const numberList = (values: Array<number | null | undefined>): number[] =>
+  values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
 export default function TickerCard({ tile, now, onExpand }: Props) {
   const price = tile.admin?.lastPrice;
   const probability = Math.round((tile.probability_to_action ?? 0) * 100);
@@ -25,6 +28,13 @@ export default function TickerCard({ tile, now, onExpand }: Props) {
   const entryReady = Boolean(tile.delta_to_entry?.at_entry && tile.patience_candle);
   const rationale = tile.rationale?.positives?.[0] ?? "Watching flow";
   const confluenceLeaders = useMemo(() => tile.breakdown.slice(0, 2), [tile.breakdown]);
+  const closes =
+    (Array.isArray(tile.admin?.last_1m_closes) && tile.admin?.last_1m_closes?.length ? tile.admin?.last_1m_closes : numberList((tile.bars ?? []).map((bar) => bar.c ?? bar.o))).slice();
+  const keyLevels = (tile.key_levels?.length ? tile.key_levels : tile.admin?.levels) ?? [];
+  const patienceCue = (tile.admin?.timing?.label ?? "").toLowerCase().includes("patience");
+  const entryBand = (tile.band?.label ?? "").toLowerCase() === "entryready".toLowerCase();
+  const isAGrade = (tile.grade || "").toUpperCase().startsWith("A");
+  const aPlusEntry = (entryBand && isAGrade) || patienceCue;
 
   return (
     <article className="flex flex-col gap-4 rounded-2xl border border-slate-800/80 bg-slate-950/60 p-4 shadow-lg transition hover:border-emerald-500/50">
@@ -64,7 +74,13 @@ export default function TickerCard({ tile, now, onExpand }: Props) {
 
       <div className="flex flex-col gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/30 p-3">
         <p className="text-xs uppercase tracking-wide text-slate-500">Micro structure</p>
-        <MicroStructureChart tile={tile} />
+        <MiniCandles
+          closes={closes}
+          levels={keyLevels}
+          managing={tile.admin?.managing}
+          ema={{ e8: tile.ema8, e21: tile.ema21 }}
+          aPlusEntry={aPlusEntry}
+        />
         <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
           <span className={clsx("rounded-full px-2 py-0.5", tile.patience_candle ? "bg-emerald-600/20 text-emerald-200" : "bg-slate-800 text-slate-400")}>Patience {tile.patience_candle ? "On" : "Off"}</span>
           <span>VWAP {tile.vwap[tile.vwap.length - 1]?.toFixed(2) ?? "--"}</span>

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
 const SESSION_GUIDELINES: Record<string, string> = {
-  Premarket: "Prep levels, pre-plan risk.",
-  "Open I": "Trade playbook setups with full size.",
-  Midday: "Fade noise; focus on A+ only.",
-  Late: "Protect gains, scale plans deliberately.",
-  Afterhours: "Review + log, no new risk.",
+  Premarket: "Prep only. Mark levels. No early chasing.",
+  Open: "Wait for patience candle. Trade only A/A+ with LTP.",
+  Midday: "Thin liquidity — be selective. Manage runners only.",
+  PowerHour: "Continuation or reversals. Respect VWAP/levels.",
+  AfterHours: "No new risk. Journal + review.",
 };
 
 type MarketClock = {
@@ -34,10 +34,10 @@ function getEtParts(date: Date) {
 function resolveSession(hour: number, minute: number): MarketClock["session"] {
   const minutes = hour * 60 + minute;
   if (minutes < 570) return "Premarket"; // before 9:30
-  if (minutes < 660) return "Open I"; // 9:30-11:00
-  if (minutes < 870) return "Midday"; // 11:00-14:30
-  if (minutes < 960) return "Late"; // 14:30-16:00
-  return "Afterhours";
+  if (minutes < 630) return "Open"; // 9:30-10:30
+  if (minutes < 870) return "Midday"; // 10:30-14:30
+  if (minutes < 960) return "PowerHour"; // 14:30-16:00
+  return "AfterHours";
 }
 
 export function useMarketClock(): MarketClock {

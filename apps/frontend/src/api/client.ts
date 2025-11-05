@@ -105,11 +105,21 @@ async function postAlert(payload: AlertPayload): Promise<{ status: string }> {
   return postJSON("/api/alerts", payload);
 }
 
+function postPositionsStart(symbol: string, direction: "long" | "short", entry?: number) {
+  return postJSON("/api/positions/start", { symbol, direction, entry });
+}
+
+function postPositionsStop(symbol: string) {
+  return postJSON("/api/positions/stop", { symbol });
+}
+
 export {
   BACKEND,
   connectWS,
   getJSON,
   postJSON,
+  postPositionsStart,
+  postPositionsStop,
   postAlert,
   usePolicyMutation,
   useTickers,
