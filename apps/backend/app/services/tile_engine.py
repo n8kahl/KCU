@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from statistics import mean, pstdev
-from typing import Any
+from typing import Any, Dict
 
 from sqlalchemy import select
 
@@ -38,6 +39,17 @@ logger = logging.getLogger(__name__)
 REFRESH_SECONDS = 60
 state_machine = StateMachine()
 DB_TIMEFRAME = "1m"
+WARM_INTERVAL_SECONDS = 300
+_last_warm: Dict[str, float] = {}
+
+
+def _should_warm(symbol: str) -> bool:
+    now = time.time()
+    last = _last_warm.get(symbol, 0.0)
+    if now - last >= WARM_INTERVAL_SECONDS:
+        _last_warm[symbol] = now
+        return True
+    return False
 
 
 def _row_to_float(value: Any) -> float | None:
@@ -814,7 +826,11 @@ async def run_tile_pipeline(manager: ConnectionManager | None = None) -> None:
             await asyncio.sleep(5)
             continue
         for symbol in symbols:
-            await warm_candles(symbol)
+            if _should_warm(symbol):
+                try:
+                    await warm_candles(symbol)
+                except Exception as exc:  # pragma: no cover - network errors
+                    logger.warning("warm-candles-failed", extra={"symbol": symbol, "error": str(exc)})
             await poll_quotes(symbol)
             await refresh_symbol(symbol, manager)
         evt = watchlist_service.event()
