@@ -38,29 +38,43 @@ class WatchlistService:
         return "watchlist" in message and any(token in message for token in indicators)
 
     async def seed_if_empty(self) -> None:
-        try:
-            async with async_session() as session:
-                existing = (await session.execute(select(WatchlistItem).limit(1))).scalars().all()
-                if existing:
-                    return
-                rows = [{"ticker": ticker, "position": idx} for idx, ticker in enumerate(settings.watchlist)]
-                if rows:
-                    await session.execute(insert(WatchlistItem).values(rows))
-                    await session.commit()
-                    self._event.set()
-        except (ProgrammingError, OperationalError) as exc:  # pragma: no cover - degraded env
-            if self._table_missing(exc):
-                await self._ensure_table()
-                await self.seed_if_empty()
-            else:
-                self._logger.warning("watchlist-seed-failed", extra={"error": str(exc)})
-        except Exception as exc:  # pragma: no cover
-            self._logger.warning("watchlist-seed-failed", extra={"error": str(exc)})
+        ensured = False
+        while True:
+            try:
+                async with async_session() as session:
+                    existing = (
+                        (await session.execute(select(WatchlistItem).limit(1))).scalars().all()
+                    )
+                    if existing:
+                        self._clear_db_warning()
+                        return
+                    rows = [
+                        {"ticker": ticker, "position": idx}
+                        for idx, ticker in enumerate(settings.watchlist)
+                    ]
+                    if rows:
+                        await session.execute(insert(WatchlistItem).values(rows))
+                        await session.commit()
+                        self._event.set()
+                        self._clear_db_warning()
+                return
+            except (ProgrammingError, OperationalError) as exc:  # pragma: no cover - degraded env
+                if self._table_missing(exc) and not ensured:
+                    ensured = True
+                    await self._ensure_table()
+                    continue
+                self._log_db_warning("watchlist-seed-failed", str(exc))
+                return
+            except Exception as exc:  # pragma: no cover
+                self._log_db_warning("watchlist-seed-failed", str(exc))
+                return
 
     async def list(self) -> List[str]:
         try:
             async with async_session() as session:
-                stmt: Select = select(WatchlistItem).order_by(WatchlistItem.position.asc(), WatchlistItem.ticker.asc())
+                stmt: Select = select(WatchlistItem).order_by(
+                    WatchlistItem.position.asc(), WatchlistItem.ticker.asc()
+                )
                 rows = (await session.execute(stmt)).scalars().all()
             symbols = [row.ticker.upper() for row in rows]
             if symbols:
@@ -84,7 +98,9 @@ class WatchlistService:
                 positions = (await session.execute(select(WatchlistItem.position))).scalars().all()
                 next_pos = (max(positions) + 1) if positions else 0
                 try:
-                    await session.execute(insert(WatchlistItem).values({"ticker": ticker, "position": next_pos}))
+                    await session.execute(
+                        insert(WatchlistItem).values({"ticker": ticker, "position": next_pos})
+                    )
                     await session.commit()
                 except Exception:
                     await session.rollback()
