@@ -67,6 +67,7 @@ async def run_massive_ws(
             async with websockets.connect(url, ping_interval=None) as ws:
                 logger.info("massive-ws-connected", extra={"url": url})
                 await ws.send(json.dumps({"action": "auth", "params": api_key}))
+                await _await_auth_ack(ws)
                 # Re-hydrate subscriptions on every connect
                 for params in snapshot_subscriptions():
                     await ws.send(json.dumps({"action": "subscribe", "params": params}))
@@ -90,6 +91,22 @@ async def run_massive_ws(
                 sender_task.cancel()
                 with suppress(asyncio.CancelledError, ConnectionClosed):
                     await sender_task
+
+
+async def _await_auth_ack(ws) -> None:
+    try:
+        raw = await asyncio.wait_for(ws.recv(), timeout=5)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError("massive-ws-auth-timeout") from exc
+    try:
+        msg = json.loads(raw)
+    except json.JSONDecodeError as exc:  # pragma: no cover - network data
+        raise RuntimeError("massive-ws-auth-invalid-json") from exc
+
+    status = str(msg.get("status", "")).lower()
+    if status not in {"auth_success", "success", "ok"}:
+        raise RuntimeError(f"massive-ws-auth-failed:{msg}")
+    logger.info("massive-ws-authenticated")
 
 
 def _normalize_event(msg: dict) -> dict | None:
