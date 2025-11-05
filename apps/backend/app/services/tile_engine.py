@@ -6,11 +6,12 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean, pstdev
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.adapters.massive import MassiveClient
 from app.core.settings import settings
-from app.db.models import Snapshot
+from app.db.models import Candle, Levels, OptionSnapshot, Snapshot
 from app.db.session import async_session
 from app.domain.features import (
     levels_cluster,
@@ -25,6 +26,7 @@ from app.domain.options_health import diagnostics
 from app.domain.scoring import aggregate_probability, confidence_interval
 from app.domain.types import TileState
 from app.services.baselines import baseline_service, percentile_rank, percentile_to_label
+from app.services.data_cache import quote_cache
 from app.services.state_machine import StateMachine
 from app.services.state_store import state_store
 from app.services.timing import get_timing_context
@@ -34,6 +36,74 @@ from app.ws.manager import ConnectionManager
 logger = logging.getLogger(__name__)
 REFRESH_SECONDS = 60
 state_machine = StateMachine()
+DB_TIMEFRAME = "1m"
+
+
+def _row_to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candle_row(row: Candle) -> dict[str, Any]:
+    return {
+        "o": _row_to_float(row.open),
+        "h": _row_to_float(row.high),
+        "l": _row_to_float(row.low),
+        "c": _row_to_float(row.close),
+        "v": row.volume,
+        "t": row.ts.isoformat(),
+    }
+
+
+def _level_prev(level: Levels | None) -> dict[str, Any]:
+    if not level:
+        return {}
+    return {
+        "ticker": level.ticker,
+        "results": [
+            {
+                "c": _row_to_float(level.prior_close),
+                "h": _row_to_float(level.prior_high),
+                "l": _row_to_float(level.prior_low),
+                "o": _row_to_float(level.open_print),
+            }
+        ]
+    }
+
+
+def _level_premarket(level: Levels | None) -> dict[str, Any]:
+    if not level:
+        return {}
+    return {
+        "preMarketHigh": _row_to_float(level.premarket_high),
+        "preMarketLow": _row_to_float(level.premarket_low),
+    }
+
+
+def _option_row(row: OptionSnapshot) -> dict[str, Any]:
+    bid = _row_to_float(row.bid)
+    ask = _row_to_float(row.ask)
+    mid = _row_to_float(row.mid) or ((bid + ask) / 2 if bid is not None and ask is not None else None)
+    spread_pct = None
+    if mid and bid is not None and ask is not None and mid != 0:
+        spread_pct = round(((ask - bid) / mid) * 100, 4)
+    return {
+        "contract": row.contract,
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+        "oi": row.oi,
+        "volume": row.vol,
+        "iv": _row_to_float(row.iv),
+        "delta": _row_to_float(row.delta),
+        "theta": _row_to_float(row.theta),
+        "spread_pct_of_mid": spread_pct,
+        "nbbo_quality": "unknown",
+    }
 
 
 def _default_market_micro() -> dict[str, float]:
@@ -70,7 +140,40 @@ def _atr(candles: list[dict[str, Any]], period: int = 5) -> float | None:
     return float(sum(trs) / len(trs))
 
 
-async def _fetch_massive_payload(symbol: str) -> dict[str, Any]:
+async def _load_cached_payload(symbol: str) -> dict[str, Any] | None:
+    async with async_session() as session:
+        candles_stmt = (
+            select(Candle)
+            .where(Candle.ticker == symbol, Candle.timeframe == DB_TIMEFRAME)
+            .order_by(Candle.ts.desc())
+            .limit(200)
+        )
+        candle_rows = list(reversed((await session.execute(candles_stmt)).scalars().all()))
+        level_stmt = select(Levels).where(Levels.ticker == symbol).order_by(Levels.day.desc()).limit(1)
+        level_row = (await session.execute(level_stmt)).scalar_one_or_none()
+        option_stmt = (
+            select(OptionSnapshot)
+            .where(OptionSnapshot.ticker == symbol)
+            .order_by(OptionSnapshot.ts.desc(), OptionSnapshot.id.desc())
+            .limit(80)
+        )
+        option_rows = (await session.execute(option_stmt)).scalars().all()
+    if not candle_rows:
+        return None
+    payload: dict[str, Any] = {
+        "candles": [_candle_row(row) for row in candle_rows],
+        "options_chain": [_option_row(row) for row in option_rows],
+    }
+    if level_row:
+        payload["prev_close"] = _level_prev(level_row)
+        payload["premarket"] = _level_premarket(level_row)
+    quote = await quote_cache.get_quote(symbol)
+    if quote:
+        payload["quote"] = quote
+    return payload
+
+
+async def _fetch_live_payload(symbol: str) -> dict[str, Any]:
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=2)
     async with MassiveClient() as client:
@@ -88,6 +191,13 @@ async def _fetch_massive_payload(symbol: str) -> dict[str, Any]:
         "quote": quote,
         "options_chain": options_chain,
     }
+
+
+async def _fetch_massive_payload(symbol: str) -> dict[str, Any]:
+    cached = await _load_cached_payload(symbol)
+    if cached:
+        return cached
+    return await _fetch_live_payload(symbol)
 
 
 def _summarize_options(options_chain: list[dict[str, Any]]) -> dict[str, Any]:
