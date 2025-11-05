@@ -37,4 +37,4 @@ celery -A app.workers.celery_app.app beat -l INFO
 
 ## Environment variables
 
-See `.env.example` for required values. Never commit secrets; Railway manages runtime secrets.
+See `.env.example` for required values (e.g., `OPTIONS_DATA_ENABLED` to toggle Massive options-chain fetches). Never commit secrets; Railway manages runtime secrets.

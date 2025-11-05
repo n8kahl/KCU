@@ -78,7 +78,9 @@ async def _fetch_massive_payload(symbol: str) -> dict[str, Any]:
         prev_close = await client.get_previous_close(symbol)
         premarket_range = await client.get_premarket_range(symbol, end)
         quote = await client.get_quote_snapshot(symbol)
-        options_chain = await client.get_options_chain(symbol, end)
+        options_chain = []
+        if settings.options_data_enabled:
+            options_chain = await client.get_options_chain(symbol, end)
     return {
         "candles": candles[-100:],
         "prev_close": prev_close,

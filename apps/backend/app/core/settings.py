@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     service_env: str = Field(default="development", validation_alias="SERVICE_ENV")
     api_key: str = Field(default="dev-admin-key", validation_alias="API_KEY")
     watchlist_raw: str = Field(default="SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL", validation_alias="WATCHLIST")
+    options_data_enabled: bool = Field(default=True, validation_alias="OPTIONS_DATA_ENABLED")
 
     class Config:
         env_file = ".env"
