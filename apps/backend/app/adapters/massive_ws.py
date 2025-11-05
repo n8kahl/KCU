@@ -52,7 +52,7 @@ async def run_massive_ws(
     if not api_key:
         raise RuntimeError("MASSIVE_API_KEY required for Massive WS streaming")
 
-    url = os.getenv("MASSIVE_WS_URL", "wss://api.massive.com/v1/stream")
+    url = os.getenv("MASSIVE_WS_URL", "wss://socket.massive.com/options")
     backoff = 1
 
     while True:
