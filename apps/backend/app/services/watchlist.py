@@ -41,6 +41,17 @@ class WatchlistService:
         indicators = ["does not exist", "no such table", "undefined table"]
         return "watchlist" in message and any(token in message for token in indicators)
 
+    def _column_missing(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "watchlist" in message and "column" in message and "does not exist" in message
+
+    async def _recreate_table(self) -> None:
+        self._logger.warning("watchlist-recreate-table")
+        async with engine.begin() as conn:
+            await conn.run_sync(WatchlistItem.__table__.drop, checkfirst=True)
+            await conn.run_sync(WatchlistItem.__table__.create, checkfirst=True)
+        self._table_ready = True
+
     async def seed_if_empty(self) -> None:
         ensured = False
         while True:
@@ -67,6 +78,10 @@ class WatchlistService:
                     ensured = True
                     await self._ensure_table()
                     continue
+                if self._column_missing(exc) and not ensured:
+                    ensured = True
+                    await self._recreate_table()
+                    continue
                 self._log_db_warning("watchlist-seed-failed", str(exc))
                 return
             except Exception as exc:  # pragma: no cover
@@ -92,6 +107,10 @@ class WatchlistService:
                 if self._table_missing(exc) and not ensured:
                     ensured = True
                     await self._ensure_table()
+                    continue
+                if self._column_missing(exc) and not ensured:
+                    ensured = True
+                    await self._recreate_table()
                     continue
                 self._log_db_warning("watchlist-list-failed", str(exc))
                 return list(self._memory)
@@ -125,6 +144,10 @@ class WatchlistService:
                     ensured = True
                     await self._ensure_table()
                     continue
+                if self._column_missing(exc) and not ensured:
+                    ensured = True
+                    await self._recreate_table()
+                    continue
                 self._log_db_warning("watchlist-add-failed", str(exc))
                 break
             except Exception as exc:  # pragma: no cover
@@ -153,6 +176,10 @@ class WatchlistService:
                 if self._table_missing(exc) and not ensured:
                     ensured = True
                     await self._ensure_table()
+                    continue
+                if self._column_missing(exc) and not ensured:
+                    ensured = True
+                    await self._recreate_table()
                     continue
                 self._log_db_warning("watchlist-remove-failed", str(exc))
                 break
