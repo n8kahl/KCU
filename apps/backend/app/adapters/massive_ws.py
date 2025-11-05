@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from contextlib import suppress
 from typing import Awaitable, Callable
 
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +36,6 @@ def _normalize_ts(value: int | float | str | None) -> int | None:
         return None
 
 
-def _coerce_ts(value: int | float | str | None) -> int | None:
-    return _normalize_ts(value)
-
-
-def _strip_index_prefix(symbol: str | None) -> str | None:
-    if symbol is None:
-        return None
-    text = str(symbol)
-    return text.removeprefix("I:") if text.startswith("I:") else text
-
-
 async def _subscription_sender(ws, queue: asyncio.Queue[str]) -> None:
     while True:
         params = await queue.get()
@@ -60,30 +50,33 @@ async def _subscription_sender(ws, queue: asyncio.Queue[str]) -> None:
 
 async def run_massive_ws(
     on_event: Callable[[dict], Awaitable[None]],
-    subscription_queue: asyncio.Queue[str],
-    snapshot_subscriptions: Callable[[], list[str]],
+    subscription_queue: asyncio.Queue[str] | None,
+    snapshot_subscriptions: Callable[[], list[str]] | None,
+    url: str | None = None,
 ) -> None:
     """Connect to Massive WS, dispatch normalized events, and handle reconnects."""
 
-    api_key = os.getenv("MASSIVE_API_KEY")
+    api_key = settings.massive_api_key
     if not api_key:
         raise RuntimeError("MASSIVE_API_KEY required for Massive WS streaming")
 
-    url = os.getenv("MASSIVE_WS_URL", "wss://socket.massive.com/options")
+    stream_url = url or settings.massive_options_ws_url
     backoff = 1
 
     while True:
         sender_task: asyncio.Task | None = None
         try:
-            async with websockets.connect(url, ping_interval=None) as ws:
-                logger.info("massive-ws-connected", extra={"url": url})
+            async with websockets.connect(stream_url, ping_interval=None) as ws:
+                logger.info("massive-ws-connected", extra={"url": stream_url})
                 await _wait_for_status(ws, accepted={"connected"})
                 await ws.send(json.dumps({"action": "auth", "params": api_key}))
                 await _wait_for_status(ws, accepted={"auth_success", "success", "ok"}, log_event="massive-ws-authenticated")
                 # Re-hydrate subscriptions on every connect
-                for params in snapshot_subscriptions():
-                    await ws.send(json.dumps({"action": "subscribe", "params": params}))
-                sender_task = asyncio.create_task(_subscription_sender(ws, subscription_queue))
+                if snapshot_subscriptions:
+                    for params in snapshot_subscriptions():
+                        await ws.send(json.dumps({"action": "subscribe", "params": params}))
+                if subscription_queue:
+                    sender_task = asyncio.create_task(_subscription_sender(ws, subscription_queue))
                 backoff = 1
                 async for raw in ws:
                     try:
@@ -97,7 +90,9 @@ async def run_massive_ws(
                         if event:
                             await on_event(event)
         except Exception as exc:  # pragma: no cover - network failure path
-            logger.warning("massive-ws-reconnect", extra={"error": str(exc), "backoff": backoff})
+            logger.warning(
+                "massive-ws-reconnect", extra={"error": str(exc), "backoff": backoff, "url": stream_url}
+            )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10)
         finally:
@@ -152,13 +147,14 @@ def _normalize_event(msg: dict) -> dict | None:
             "c": msg.get("val"),
             "t": _normalize_ts(msg.get("t")),
         }
-    if ev == "AS":
-        price = msg.get("c") or msg.get("close") or msg.get("val")
-        ts = _coerce_ts(msg.get("t") or msg.get("e") or msg.get("ts"))
-        symbol = _strip_index_prefix(msg.get("sym") or msg.get("T") or msg.get("symbol"))
-        if price is None or ts is None or not symbol:
-            return None
-        return {"kind": "index_value", "symbol": symbol, "c": float(price), "t": ts}
+    if ev == "AS" and str(msg.get("sym", "")).startswith("I:"):
+        sym = str(msg["sym"]).removeprefix("I:")
+        return {
+            "kind": "index_value",
+            "symbol": sym,
+            "c": msg.get("c") or msg.get("val"),
+            "t": _normalize_ts(msg.get("t") or msg.get("e") or msg.get("s")),
+        }
     if ev == "Q" and str(msg.get("sym", "")).startswith("O:"):
         bp = msg.get("bp")
         ap = msg.get("ap")

@@ -29,6 +29,7 @@ _last_broadcast: Dict[str, float] = {}
 _contract_symbol_map: Dict[str, Set[str]] = {}
 
 ETF_INDEX = {"SPY": "SPX", "QQQ": "NDX"}
+INDEX_SYMBOLS = sorted(set(ETF_INDEX.values()))
 BROADCAST_INTERVAL = 0.2  # seconds (≈5 Hz)
 
 
@@ -46,17 +47,13 @@ def _current_subscriptions() -> list[str]:
     return list(_known_subscriptions)
 
 
-async def _bootstrap_index_subscriptions() -> None:
-    seen = set()
-    for symbol in settings.watchlist:
-        idx = ETF_INDEX.get(symbol)
-        if not idx or idx in seen:
-            continue
-        seen.add(idx)
-        await _ensure_subscription(f"AM.I:{idx}")
-        await _ensure_subscription(f"V.I:{idx}")
-        # attempt per-second stream; ignore errors upstream if unavailable
-        await _ensure_subscription(f"AS.I:{idx}")
+def _index_snapshot_subscriptions() -> list[str]:
+    subs: list[str] = []
+    for idx in INDEX_SYMBOLS:
+        subs.append(f"AM.I:{idx}")
+        subs.append(f"V.I:{idx}")
+        subs.append(f"AS.I:{idx}")
+    return subs
 
 
 async def _sync_option_contracts() -> None:
@@ -92,6 +89,30 @@ async def _broadcast(symbol: str, tile_data: dict, manager: ConnectionManager) -
 async def _handle_index_event(symbol: str, manager: ConnectionManager) -> None:
     idx_bars = [bar for _, bar in last_index_1m(symbol, 40)]
     idx_closes = [bar.get("c") for bar in idx_bars if bar.get("c") is not None]
+    if len(idx_closes) < 6:
+        prices_1s = [price for _, price in last_index_1s(symbol, 120)]
+        returns = [(b - a) / a for a, b in zip(prices_1s, prices_1s[1:]) if a] if len(prices_1s) > 2 else []
+        chop = micro_chop(returns)
+        for etf, idx in ETF_INDEX.items():
+            if idx != symbol:
+                continue
+            etf_state = await state_store.get_state(etf)
+            etf_series = (etf_state.admin or {}).get("last_1m_closes") if etf_state else []
+            divz = divergence_z(etf_series or idx_closes or [0.0], idx_closes or [0.0])
+            tile = await merge_realtime_into_tile(
+                etf,
+                {
+                    "marketMicro": {
+                        "minuteThrust": 0.0,
+                        "microChop": chop or 0.0,
+                        "divergenceZ": divz,
+                        "secVariance": 0.0,
+                    }
+                },
+            )
+            await _broadcast(etf, tile.model_dump(), manager)
+        return
+
     prices_1s = [price for _, price in last_index_1s(symbol, 120)]
     returns = [(b - a) / a for a, b in zip(prices_1s, prices_1s[1:]) if a] if len(prices_1s) > 2 else []
     chop = micro_chop(returns)
@@ -99,31 +120,7 @@ async def _handle_index_event(symbol: str, manager: ConnectionManager) -> None:
     if returns:
         mean_val = sum(returns) / len(returns)
         sec_variance = sum((val - mean_val) ** 2 for val in returns) / len(returns)
-
-    has_history = len(idx_closes) >= 6
-    thrust = minute_thrust(idx_closes, 5) if has_history else 0.0
-
-    if not has_history:
-        for etf, idx in ETF_INDEX.items():
-            if idx != symbol:
-                continue
-            etf_state = await state_store.get_state(etf)
-            etf_series = list((etf_state.admin or {}).get("last_1m_closes") or []) if etf_state else []
-            idx_series = idx_closes or etf_series
-            divz = divergence_z(etf_series, idx_series) if etf_series and idx_series else 0.0
-            tile = await merge_realtime_into_tile(
-                etf,
-                {
-                    "marketMicro": {
-                        "minuteThrust": round(thrust, 4),
-                        "microChop": round(chop, 4),
-                        "divergenceZ": divz,
-                        "secVariance": round(sec_variance, 6),
-                    }
-                },
-            )
-            await _broadcast(etf, tile.model_dump(), manager)
-        return
+    thrust = minute_thrust(idx_closes, 5)
 
     for etf, idx in ETF_INDEX.items():
         if idx != symbol:
@@ -180,9 +177,24 @@ async def _on_event(event: dict, manager: ConnectionManager) -> None:
 
 
 async def start_realtime(manager: ConnectionManager) -> None:
-    await _bootstrap_index_subscriptions()
     asyncio.create_task(_sync_option_contracts())
-    await run_massive_ws(lambda event: _on_event(event, manager), _subscription_queue, _current_subscriptions)
+    option_task = asyncio.create_task(
+        run_massive_ws(
+            lambda event: _on_event(event, manager),
+            _subscription_queue,
+            _current_subscriptions,
+            settings.massive_options_ws_url,
+        )
+    )
+    index_task = asyncio.create_task(
+        run_massive_ws(
+            lambda event: _on_event(event, manager),
+            None,
+            _index_snapshot_subscriptions,
+            settings.massive_index_ws_url,
+        )
+    )
+    await asyncio.gather(option_task, index_task)
 
 
 async def _handle_option_quote(event: dict, manager: ConnectionManager) -> None:

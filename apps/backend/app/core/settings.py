@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     massive_connect_timeout: float = Field(default=6.0, validation_alias="MASSIVE_CONNECT_TIMEOUT")
     massive_read_timeout: float = Field(default=15.0, validation_alias="MASSIVE_READ_TIMEOUT")
     massive_pool_size: int = Field(default=8, validation_alias="MASSIVE_POOL_SIZE")
+    massive_options_ws_url: str = Field(
+        default="wss://socket.massive.com/options", validation_alias="MASSIVE_OPTIONS_WS_URL"
+    )
+    massive_index_ws_url: str = Field(
+        default="wss://socket.massive.com/stocks", validation_alias="MASSIVE_INDEX_WS_URL"
+    )
     discord_webhook_url: str | None = Field(default=None, validation_alias="DISCORD_WEBHOOK_URL")
     frontend_origin: str = Field(
         default="https://kcu-ui-production.up.railway.app", validation_alias="FRONTEND_ORIGIN"
