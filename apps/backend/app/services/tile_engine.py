@@ -72,6 +72,15 @@ def _candle_row(row: Candle) -> dict[str, Any]:
     }
 
 
+def _quote_price(payload: dict[str, Any]) -> float | None:
+    quote = payload.get("quote") or {}
+    for key in ("mid", "bid", "ask"):
+        value = quote.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
+
+
 def _level_prev(level: Levels | None) -> dict[str, Any]:
     if not level:
         return {}
@@ -367,6 +376,9 @@ def _compute_contributions(
 ) -> tuple[dict[str, float], dict[str, Any]]:
     candles = payload.get("candles", [])
     closes = [c.get("c") for c in candles if c.get("c")]
+    quote_price = _quote_price(payload)
+    if len(closes) < 2 and quote_price:
+        closes = [quote_price * 0.999, quote_price]
     if not closes:
         closes = [1.0, 1.0]
     ema_fast = _safe_mean(closes[-8:])
