@@ -32,18 +32,31 @@ npm run dev
 
 ## Railway deployment
 
-1. **Create Postgres** → set `DATABASE_URL` on backend service.
-2. **Create Redis** → set `REDIS_URL` on backend service (Celery broker/backend).
-3. **Backend service**
+1. **Provision data stores**
+   - Create PostgreSQL → set `DATABASE_URL` on the backend.
+   - Create Redis → set `REDIS_URL` (Celery broker + cache).
+2. **Backend service** (apps/backend)
    - Build: `python`
    - Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-  - Required variables: `PORT=3001`, `DATABASE_URL`, `REDIS_URL`, `MASSIVE_API_KEY`, `FRONTEND_ORIGIN=https://kcu-ui-production.up.railway.app`, `SERVICE_ENV=production`, `API_KEY=<admin>`, `WATCHLIST=SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL`, optional `DISCORD_WEBHOOK_URL`.
-4. **Frontend service**
+   - Required env vars:
+     - `PORT=3001`, `DATABASE_URL`, `REDIS_URL`, `MASSIVE_API_KEY`, `SERVICE_ENV=production`, `API_KEY=<admin token>`
+     - `WATCHLIST=SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL`
+     - `OPTIONS_DATA_ENABLED=true` (set `false` while options data warms up)
+     - `DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<id>`
+     - `FRONTEND_ORIGIN=https://your-frontend.up.railway.app` (comma-separated if multiple UI domains; drives CORS)
+3. **Frontend service** (apps/frontend)
    - Build: `node`
    - Start: `npm run preview -- --host --port $PORT`
-   - Variables: `VITE_BACKEND_URL=https://kcu.up.railway.app`
+   - Env vars: `VITE_BACKEND_URL=https://<backend>.up.railway.app`
 
-Deploy backend first so Vite preview can target the production API URL for smoke tests.
+Deploy backend first so the UI can hit a live API. Make sure both Railway services share the same Discord webhook so one-tap alerts reach the channel.
+
+### Railway smoke test
+
+1. `curl https://<backend>.up.railway.app/api/health` → `status: ok`.
+2. Open the frontend URL, confirm the heartbeat pill reads **Live** and the Market Clock/guideline chip matches the ET session.
+3. Tiles should stream via WebSocket (grades update without reload). Expand a ticker → confirm Top 3 OTM contracts render with live mid/delta.
+4. Click **Load Contract**, hit **Enter**, add a note, send → observe alert in Discord and the Active Trades panel shows the new entry with captured price and %PnL.
 
 ## CI overview
 

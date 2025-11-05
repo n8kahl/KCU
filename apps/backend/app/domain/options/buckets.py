@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 ETF_INDEX = {
@@ -8,24 +9,41 @@ ETF_INDEX = {
 }
 
 
+CONTRACT_REGEX = re.compile(
+    r"^(?P<root>[A-Z]+)(?P<expiry>\d{6})(?P<type>[CP])(?P<strike>\d{8})(?P<suffix>.*)?$"
+)
+
+
 def contract_metadata(contract: str | None) -> dict:
     if not contract:
-        return {"side": None, "dte": None}
+        return {"side": None, "dte": None, "strike": None, "expiry": None, "root": None}
     payload = contract.replace("O:", "")
-    side = "CALL" if "C" in payload else ("PUT" if "P" in payload else None)
+    match = CONTRACT_REGEX.match(payload)
     expiry = None
-    for idx in range(len(payload) - 5):
-        chunk = payload[idx : idx + 6]
-        if chunk.isdigit():
-            try:
-                expiry = datetime.strptime(chunk, "%y%m%d").date()
-                break
-            except ValueError:
-                continue
+    side = None
+    strike = None
+    root = None
+    if match:
+        root = match.group("root")
+        expiry_token = match.group("expiry")
+        try:
+            expiry = datetime.strptime(expiry_token, "%y%m%d").date()
+        except ValueError:
+            expiry = None
+        side = "CALL" if match.group("type") == "C" else "PUT"
+        strike_token = match.group("strike")
+        try:
+            strike = int(strike_token) / 1000
+        except ValueError:
+            strike = None
+    else:
+        side = "CALL" if "C" in payload else ("PUT" if "P" in payload else None)
     dte = None
+    expiry_iso = None
     if expiry:
         dte = max((expiry - datetime.now(timezone.utc).date()).days, 0)
-    return {"side": side, "dte": dte}
+        expiry_iso = expiry.isoformat()
+    return {"side": side, "dte": dte, "strike": strike, "expiry": expiry_iso, "root": root}
 
 
 def delta_bucket(delta: float | None) -> str:

@@ -1,93 +1,120 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import clsx from "clsx";
+import { postAlert } from "../api/client";
 import { useTrades } from "../store/trades";
+import type { ActiveTrade, AlertPayload } from "../types";
 
-const ACTION_LABELS = ["Enter Trade", "Trim", "Take Profit", "Add", "Exit"] as const;
-const KEY_BINDINGS: Record<string, (typeof ACTION_LABELS)[number]> = {
-  e: "Enter Trade",
-  t: "Trim",
-  p: "Take Profit",
-  a: "Add",
-  x: "Exit",
+const ACTION_LABELS: Record<string, string> = {
+  enter: "Enter",
+  add: "Add",
+  take_profit: "Take Profit",
+  trim: "Trim",
+  exit: "Exit",
 };
 
-function ActionButton({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button className="rounded bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700" onClick={onClick}>
-      {label}
-    </button>
-  );
-}
+export default function ActiveTrades() {
+  const trades = useTrades((state) => state.trades);
+  const remove = useTrades((state) => state.remove);
+  const clear = useTrades((state) => state.clear);
+  const closeTrade = useTrades((state) => state.close);
+  const recordAlert = useTrades((state) => state.recordAlert);
+  const reAlertTemplate = useTrades((state) => state.reAlertTemplate);
+  const [reAlerting, setReAlerting] = useState<string | null>(null);
 
-function ActiveTrades() {
-  const { loaded, remove, clear } = useTrades();
-  const [actionFeedback, setActionFeedback] = useState<string>("");
+  const openTrades = useMemo(() => trades.filter((trade) => !trade.isClosed), [trades]);
 
-  const handleAction = (action: string, contractId: string) => {
-    const trade = loaded.find((item) => item.contractId === contractId);
-    if (!trade) return;
-    setActionFeedback(`${action} on ${trade.label}`);
-    // Future: hook into backend/Discord
-  };
-
-  const primaryTrade = loaded[0];
-
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      const action = KEY_BINDINGS[event.key.toLowerCase()];
-      if (!action || !primaryTrade) return;
-      event.preventDefault();
-      handleAction(action, primaryTrade.contractId);
+  const handleReAlert = async (trade: ActiveTrade) => {
+    const template = reAlertTemplate(trade.contractId);
+    if (!template) return;
+    setReAlerting(trade.contractId);
+    const priceBase = trade.latestMid ?? template.price;
+    if (!priceBase) {
+      setReAlerting(null);
+      return;
+    }
+    const payload: AlertPayload = {
+      ...template,
+      price: Number(priceBase.toFixed(2)),
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [primaryTrade]);
+    try {
+      await postAlert(payload);
+      recordAlert(trade.contractId, payload);
+    } finally {
+      setReAlerting(null);
+    }
+  };
 
   return (
     <aside className="w-full rounded-2xl border border-slate-800 bg-slate-950/60 p-4 lg:sticky lg:top-4">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs uppercase tracking-wide text-slate-400">Active Trades</p>
-          <p className="text-lg font-semibold text-white">{loaded.length || "None"}</p>
+          <p className="text-lg font-semibold text-white">{openTrades.length || "None"}</p>
         </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-          <button className="text-slate-400 hover:text-white" onClick={clear} disabled={!loaded.length}>
-            Kill All
-          </button>
-        </div>
+        <button className="text-xs text-slate-400 hover:text-white" onClick={clear} disabled={!trades.length}>
+          Kill All
+        </button>
       </div>
-      <div className="mt-4 space-y-3">
-        {loaded.map((contract, index) => (
-          <div
-            key={contract.contractId}
-            className={clsx(
-              "rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-200",
-              index === 0 && "ring-2 ring-emerald-500/40",
-            )}
+      <div className="mt-4 space-y-4">
+        {trades.map((trade) => (
+          <div key={trade.contractId} className={clsx("rounded-2xl border p-4", trade.isClosed ? "border-slate-800 bg-slate-900/40" : "border-emerald-500/40 bg-emerald-500/5")}
           >
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>{contract.ticker}</span>
-              <button onClick={() => remove(contract.contractId)} className="text-slate-500 hover:text-white">
+            <div className="flex items-center justify-between text-sm">
+              <div>
+                <p className="font-mono text-base text-white">{trade.contract.contract}</p>
+                <p className="text-xs text-slate-400">{trade.symbol} · {trade.contract.expiry ?? "--"} · {trade.contract.type?.toUpperCase() ?? "--"}</p>
+              </div>
+              <button className="text-slate-500 hover:text-white" onClick={() => remove(trade.contractId)}>
                 ×
               </button>
             </div>
-            <p className="mt-1 font-mono text-[13px] text-slate-200">{contract.label}</p>
-            <p className="mt-1 text-xs text-slate-400">
-              Δ {contract.delta?.toFixed(2) ?? "--"} · DTE {contract.dte ?? "--"} · Mid {contract.mid ? `$${contract.mid.toFixed(2)}` : "--"} · Spr {contract.spreadPct?.toFixed(1) ?? "--"}%
-            </p>
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
-              {ACTION_LABELS.map((label) => (
-                <ActionButton key={label} label={label} onClick={() => handleAction(label, contract.contractId)} />
-              ))}
+            <div className="mt-3 grid grid-cols-3 gap-3 text-sm text-slate-300">
+              <div>
+                <p className="text-[11px] uppercase text-slate-500">Entry</p>
+                <p>{trade.entryPrice ? `$${trade.entryPrice.toFixed(2)}` : "--"}</p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase text-slate-500">Mid</p>
+                <p>{trade.latestMid ? `$${trade.latestMid.toFixed(2)}` : "--"}</p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase text-slate-500">%PnL</p>
+                <p className={clsx(trade.pnlPct && trade.pnlPct >= 0 ? "text-emerald-300" : "text-rose-300")}>{trade.pnlPct?.toFixed(2) ?? "--"}%</p>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-400">
+              <span>Δ {trade.contract.delta?.toFixed(2) ?? "--"}</span>
+              <span>OI {trade.contract.oi ?? "--"}</span>
+              <span>DTE {trade.contract.expiry ?? "--"}</span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              <button className="rounded-full border border-slate-700 px-3 py-1 text-slate-200" onClick={() => handleReAlert(trade)} disabled={!trade.lastTemplate || reAlerting === trade.contractId}>
+                {reAlerting === trade.contractId ? "Sending…" : "Re-alert"}
+              </button>
+              <button className="rounded-full border border-slate-700 px-3 py-1 text-slate-200" onClick={() => closeTrade(trade.contractId)} disabled={trade.isClosed}>
+                Close & Log
+              </button>
+            </div>
+            <div className="mt-4 space-y-2">
+              {trade.timeline.length ? (
+                trade.timeline.slice(-3).map((alert) => (
+                  <div key={alert.id} className="rounded-xl border border-slate-800/70 bg-slate-950/40 px-3 py-2 text-xs text-slate-300">
+                    <div className="flex items-center justify-between">
+                      <p className="font-semibold text-white">{ACTION_LABELS[alert.action] ?? alert.action}</p>
+                      <span>{new Date(alert.createdAt).toLocaleTimeString()}</span>
+                    </div>
+                    <p>Grade {alert.grade} · Conf {alert.confidence}% · @{alert.price?.toFixed(2) ?? "--"}</p>
+                    {alert.note && <p className="text-slate-400">{alert.note}</p>}
+                  </div>
+                ))
+              ) : (
+                <p className="text-xs text-slate-500">No alerts logged.</p>
+              )}
             </div>
           </div>
         ))}
-        {!loaded.length && <p className="rounded border border-dashed border-slate-800 p-4 text-center text-xs text-slate-400">Load a contract from any tile to stage it here.</p>}
-        {actionFeedback && <p className="text-center text-[11px] text-emerald-300">{actionFeedback}</p>}
+        {!trades.length && <p className="rounded border border-dashed border-slate-800/70 p-4 text-center text-sm text-slate-500">Load a contract from any tile to stage it here.</p>}
       </div>
     </aside>
   );
 }
-
-export default ActiveTrades;

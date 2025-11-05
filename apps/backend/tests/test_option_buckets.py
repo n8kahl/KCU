@@ -9,6 +9,9 @@ def test_option_bucket_helpers():
     metadata = contract_metadata("O:SPX240621C04500000")
     assert metadata["side"] == "CALL"
     assert metadata["dte"] >= 0
+    assert metadata["strike"] == 4500.0
+    assert metadata["expiry"]
+    assert metadata["root"] == "SPX"
     bucket = option_bucket("SPY", 0.38, metadata["dte"], metadata["side"])
     assert bucket.startswith("SPX:CALL:Delta")
     assert delta_bucket(0.35) == "Delta[0.30-0.40]"

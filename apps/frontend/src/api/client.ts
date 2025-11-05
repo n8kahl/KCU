@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { AlertPayload, Tile } from "../types";
 
 const FALLBACK_BACKEND =
   typeof window !== "undefined" && window.location.hostname.endsWith("railway.app")
@@ -55,7 +56,7 @@ function useTickers() {
 }
 
 function useTile(symbol: string | undefined) {
-  return useQuery<{ symbol: string } & Record<string, unknown>>({
+  return useQuery<Tile>({
     queryKey: ["tile", symbol],
     queryFn: () => getJSON(`/api/tickers/${symbol}/state`),
     enabled: Boolean(symbol),
@@ -100,11 +101,16 @@ function useRemoveTicker() {
 }
 
 export type { WhatIfResponse, WsStatus };
+async function postAlert(payload: AlertPayload): Promise<{ status: string }> {
+  return postJSON("/api/alerts", payload);
+}
+
 export {
   BACKEND,
   connectWS,
   getJSON,
   postJSON,
+  postAlert,
   usePolicyMutation,
   useTickers,
   useTile,

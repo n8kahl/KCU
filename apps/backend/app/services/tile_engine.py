@@ -5,7 +5,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from statistics import mean, pstdev
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from sqlalchemy import select
 
@@ -24,7 +24,7 @@ from app.domain.features import (
 from app.domain.options.buckets import ETF_INDEX, contract_metadata, option_bucket
 from app.domain.options_health import diagnostics
 from app.domain.scoring import aggregate_probability, confidence_interval
-from app.domain.types import TileState
+from app.domain.types import BarPoint, KeyLevel, LevelDelta, OptionTopContract, TileState
 from app.services.baselines import baseline_service, percentile_rank, percentile_to_label
 from app.services.data_cache import quote_cache
 from app.services.ingest import poll_quotes, warm_candles
@@ -130,6 +130,203 @@ def _option_row(row: OptionSnapshot) -> dict[str, Any]:
     }
 
 
+GRADE_BANDS: list[tuple[float, str]] = [
+    (0.97, "A+"),
+    (0.93, "A"),
+    (0.9, "A-"),
+    (0.86, "B+"),
+    (0.82, "B"),
+    (0.78, "B-"),
+    (0.72, "C+"),
+    (0.66, "C"),
+    (0.6, "C-"),
+    (0.55, "D"),
+]
+
+
+def _grade_from_probability(probability: float) -> str:
+    for threshold, label in GRADE_BANDS:
+        if probability >= threshold:
+            return label
+    return "F"
+
+
+def _confidence_score(confidence: dict[str, float]) -> int:
+    p95 = confidence.get("p95") or 0.0
+    return max(0, min(100, int(round(p95 * 100))))
+
+
+def _level_delta(
+    levels: list[dict[str, Any]] | None, last_price: float | None, atr_value: float | None
+) -> tuple[LevelDelta | None, str | None]:
+    if not levels or last_price is None:
+        return None, None
+    closest = None
+    for level in levels:
+        price = _row_to_float(level.get("price"))
+        if price is None:
+            continue
+        distance = abs(price - last_price)
+        if closest is None or distance < closest["distance"]:
+            closest = {"label": level.get("label"), "price": price, "distance": distance}
+    if not closest:
+        return None, None
+    diff = closest["price"] - last_price
+    percent = (diff / last_price) * 100 if last_price else None
+    atr = atr_value or max(last_price * 0.012, 0.5)
+    window = max(atr * 0.2, 0.15)
+    at_entry = abs(diff) <= window
+    direction = "above" if diff > 0 else ("below" if diff < 0 else "at")
+    delta = LevelDelta(
+        dollars=round(diff, 2),
+        percent=round(percent or 0.0, 2) if percent is not None else None,
+        direction=direction,
+        at_entry=at_entry,
+    )
+    return delta, closest.get("label")
+
+
+def _ema_series(values: list[float], period: int) -> list[float]:
+    ema_values: list[float] = []
+    multiplier = 2 / (period + 1)
+    ema = None
+    for value in values:
+        if value is None:
+            ema_values.append(ema if ema is not None else 0.0)
+            continue
+        if ema is None:
+            ema = value
+        else:
+            ema = (value - ema) * multiplier + ema
+        ema_values.append(round(ema, 4))
+    return ema_values
+
+
+def _vwap_series(bars: list[BarPoint]) -> list[float]:
+    cumulative_price = 0.0
+    cumulative_volume = 0.0
+    values: list[float] = []
+    for bar in bars:
+        high = bar.h or bar.c or bar.o or 0.0
+        low = bar.l or bar.c or bar.o or high
+        close = bar.c or bar.o or 0.0
+        volume = float(bar.v or 1.0)
+        typical = (high + low + close) / 3
+        cumulative_price += typical * volume
+        cumulative_volume += volume
+        if cumulative_volume == 0:
+            values.append(typical)
+        else:
+            values.append(round(cumulative_price / cumulative_volume, 4))
+    return values
+
+
+def _bars_snapshot(raw_candles: list[dict[str, Any]] | None, depth: int = 40) -> list[BarPoint]:
+    if not raw_candles:
+        baseline = BarPoint(o=0.0, h=0.0, l=0.0, c=0.0, v=0.0, t=datetime.now().isoformat())
+        return [baseline]
+    trimmed = raw_candles[-depth:]
+    bars: list[BarPoint] = []
+    for candle in trimmed:
+        bars.append(
+            BarPoint(
+                o=_row_to_float(candle.get("o")),
+                h=_row_to_float(candle.get("h")),
+                l=_row_to_float(candle.get("l")),
+                c=_row_to_float(candle.get("c")),
+                v=_row_to_float(candle.get("v")),
+                t=candle.get("t"),
+            )
+        )
+    return bars
+
+
+def _options_top3(
+    symbol: str, options_chain: list[dict[str, Any]] | None, last_price: float | None
+) -> list[OptionTopContract]:
+    if not settings.options_data_enabled or not options_chain:
+        return []
+    ranked: list[tuple[float, OptionTopContract]] = []
+    for doc in options_chain:
+        contract = doc.get("contract")
+        if not contract:
+            continue
+        metadata = contract_metadata(contract)
+        strike_raw = metadata.get("strike")
+        if strike_raw is None:
+            continue
+        option_type = (metadata.get("side") or "").lower()
+        expiry = metadata.get("expiry")
+        ticker = metadata.get("root") or symbol
+        delta = _row_to_float(doc.get("delta"))
+        if option_type == "call" and last_price is not None and strike_raw < last_price:
+            continue
+        if option_type == "put" and last_price is not None and strike_raw > last_price:
+            continue
+        spread_pct = doc.get("spread_pct_of_mid") or doc.get("spread_pct")
+        oi = doc.get("oi") or 1
+        distance = (
+            abs((strike_raw - last_price) / last_price) if last_price else abs(strike_raw * 0.01)
+        )
+        score = (
+            abs((abs(delta or 0.0) or 0.0) - 0.4) * 3
+            + (spread_pct or 8) * 0.4
+            + (1 / max(oi, 1)) * 50
+            + distance
+        )
+        spread_quality = "tight"
+        if spread_pct and spread_pct > 8:
+            spread_quality = "wide"
+        elif spread_pct and spread_pct > 5:
+            spread_quality = "ok"
+        ranked.append(
+            (
+                score,
+                OptionTopContract(
+                    contract=contract,
+                    ticker=ticker,
+                    expiry=expiry,
+                    strike=round(strike_raw, 2),
+                    type=option_type or None,
+                    bid=_row_to_float(doc.get("bid")),
+                    ask=_row_to_float(doc.get("ask")),
+                    mid=_row_to_float(doc.get("mid")),
+                    delta=delta,
+                    oi=oi if isinstance(oi, int) else None,
+                    spread_quality=spread_quality,
+                ),
+            )
+        )
+    ranked.sort(key=lambda item: item[0])
+    return [item[1] for item in ranked[:3]]
+
+
+def _decorate_tile_state(
+    tile: TileState,
+    contributions: dict[str, float],
+    meta: dict[str, Any],
+    payload: dict[str, Any] | None,
+) -> TileState:
+    last_price = meta.get("last_price") or tile.admin.get("lastPrice")
+    levels = meta.get("levels") or tile.admin.get("levels") or []
+    delta, label = _level_delta(levels, last_price, meta.get("atr"))
+    tile.delta_to_entry = delta
+    tile.key_level_label = label
+    bars = _bars_snapshot(payload.get("candles") if payload else None)
+    tile.bars = bars
+    closes = [bar.c for bar in bars]
+    tile.ema8 = _ema_series(closes, 8)
+    tile.ema21 = _ema_series(closes, 21)
+    tile.vwap = _vwap_series(bars)
+    tile.key_levels = [KeyLevel(label=level["label"], price=level["price"]) for level in levels if level.get("label") and level.get("price") is not None]
+    tile.patience_candle = contributions.get("Patience", 0.0) >= 0.62
+    tile.grade = _grade_from_probability(tile.probability_to_action)
+    tile.confidence_score = _confidence_score(tile.confidence)
+    if settings.options_data_enabled and payload is not None:
+        tile.options_top3 = _options_top3(tile.symbol, payload.get("options_chain"), last_price)
+    else:
+        tile.options_top3 = []
+    return tile
 def _default_market_micro() -> dict[str, float]:
     return {"minuteThrust": 0.0, "microChop": 0.0, "divergenceZ": 0.0, "secVariance": 0.0}
 
@@ -606,6 +803,7 @@ def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             "lastPrice": 0.0,
             "orb": {"range_pct": 0.3, "retest_success": False},
             "levels": [],
+            "atr": 1.0,
         },
         timestamps={"updated": now.isoformat()},
         eta_seconds=60,
@@ -617,8 +815,12 @@ def _synthetic_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
         "orb": {"range_pct": 0.3, "retest_success": False},
         "patience": {"body_pct": 0.5, "wick_ratio": 1.0},
         "series": {"closes": []},
+        "levels": [],
+        "atr": 1.0,
+        "last_price": 0.0,
     }
-    return tile, meta
+    decorated = _decorate_tile_state(tile, contributions, meta, {"candles": [], "options_chain": []})
+    return decorated, meta
 
 
 async def _persist_snapshot(symbol: str, tile: TileState, meta: dict[str, Any]) -> None:
@@ -738,6 +940,17 @@ async def merge_realtime_into_tile(symbol: str, deltas: dict[str, Any]) -> TileS
         options["tp_plan"] = plan
         tile.options = options
     tile.timestamps["updated"] = datetime.now(timezone.utc).isoformat()
+    if tile.key_levels:
+        levels_data = [{"label": lvl.label, "price": lvl.price} for lvl in tile.key_levels]
+    else:
+        levels_data = admin.get("levels", [])
+    delta, label = _level_delta(levels_data, admin.get("lastPrice"), admin.get("atr"))
+    if delta:
+        tile.delta_to_entry = delta
+    if label:
+        tile.key_level_label = label
+    tile.grade = _grade_from_probability(tile.probability_to_action)
+    tile.confidence_score = _confidence_score(tile.confidence)
     await state_store.set_state(symbol, tile)
     return tile
 
@@ -774,6 +987,7 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             "lastPrice": last_price,
             "orb": meta.get("orb"),
             "levels": meta.get("levels", []),
+            "atr": meta.get("atr"),
         }
         await tp_manager.update_context(
             symbol,
@@ -818,6 +1032,7 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
             bonuses=bonuses,
             history=history,
         )
+        tile = _decorate_tile_state(tile, contributions, meta, payload)
         return tile, meta
     except Exception as exc:  # pragma: no cover - network failures fallback
         logger.warning("tile-build-fallback symbol=%s error=%s", symbol, exc, exc_info=True)

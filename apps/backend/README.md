@@ -38,3 +38,16 @@ celery -A app.workers.celery_app.app beat -l INFO
 ## Environment variables
 
 See `.env.example` for required values (e.g., `OPTIONS_DATA_ENABLED` to toggle Massive options-chain fetches). Never commit secrets; Railway manages runtime secrets.
+
+### Railway deployment checklist
+
+- **Core envs** (Backend service):
+  - `PORT=3001`
+  - `DATABASE_URL`, `REDIS_URL`
+  - `MASSIVE_API_KEY` (live data), `SERVICE_ENV=production`, `API_KEY=<admin token>`
+  - `WATCHLIST=SPY,AAPL,MSFT,NVDA,QQQ,TSLA,AMZN,GOOGL`
+  - `OPTIONS_DATA_ENABLED=true` (set `false` if options stream unavailable)
+  - `DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<id>`
+  - `FRONTEND_ORIGIN=https://your-frontend.up.railway.app` (comma-separated if multiple clients)
+- **Frontend service** needs `VITE_BACKEND_URL=https://<backend>.up.railway.app` so the UI targets the deployed API.
+- After deploy: hit `/api/health`, confirm `/api/tickers` returns watchlist, open the UI, expand a ticker, send an `Enter` alert, and verify it lands in Discord. The WebSocket stream should immediately reorder cards by grade/confidence when probabilities change.
