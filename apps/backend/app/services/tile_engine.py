@@ -609,7 +609,7 @@ async def build_tile(symbol: str) -> tuple[TileState, dict[str, Any]]:
         )
         return tile, meta
     except Exception as exc:  # pragma: no cover - network failures fallback
-        logger.warning("tile-build-fallback", extra={"symbol": symbol, "error": str(exc)})
+        logger.warning("tile-build-fallback symbol=%s error=%s", symbol, exc, exc_info=True)
         return _synthetic_tile(symbol)
 
 

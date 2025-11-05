@@ -12,16 +12,29 @@ from massive.exceptions import BadResponse
 from app.core.settings import settings
 
 
-def _is_not_found(exc: BadResponse) -> bool:
+def _parse_error(exc: BadResponse) -> tuple[str | None, str]:
     try:
         payload = json.loads(str(exc))
     except json.JSONDecodeError:
-        return False
+        return None, str(exc)
     status = payload.get("status") or payload.get("error_code")
     message = payload.get("error") or payload.get("message", "")
+    return (status.upper() if isinstance(status, str) else None, str(message))
+
+
+def _is_not_found(exc: BadResponse) -> bool:
+    status, message = _parse_error(exc)
     if status and str(status).upper() == "NOT_FOUND":
         return True
     return "not found" in message.lower()
+
+
+def _is_plan_limited(exc: BadResponse) -> bool:
+    status, message = _parse_error(exc)
+    if status and status.upper() in {"NOT_AUTHORIZED", "FORBIDDEN"}:
+        return True
+    lowered = message.lower()
+    return "upgrade your plan" in lowered or "not authorized" in lowered
 
 
 def _agg_to_dict(agg: Any) -> dict[str, Any]:
@@ -147,7 +160,7 @@ class MassiveClient:
             try:
                 doc = self._client.get_daily_open_close_agg(ticker, as_of.date())
             except BadResponse as exc:
-                if _is_not_found(exc):
+                if _is_not_found(exc) or _is_plan_limited(exc):
                     return {}
                 raise
             return _premarket_to_dict(doc)
@@ -159,7 +172,7 @@ class MassiveClient:
             try:
                 snapshot = self._client.get_snapshot_ticker("stocks", ticker)
             except BadResponse as exc:
-                if _is_not_found(exc):
+                if _is_not_found(exc) or _is_plan_limited(exc):
                     return {}
                 raise
             return _quote_from_snapshot(snapshot)
@@ -179,7 +192,7 @@ class MassiveClient:
                     if idx + 1 >= limit:
                         break
             except BadResponse as exc:
-                if not _is_not_found(exc):
+                if not (_is_not_found(exc) or _is_plan_limited(exc)):
                     raise
             return snapshots
 
