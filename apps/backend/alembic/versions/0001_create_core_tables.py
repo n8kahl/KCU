@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "0001"
+revision = "0001_create_core_tables"
 down_revision = None
 branch_labels = None
 depends_on = None
