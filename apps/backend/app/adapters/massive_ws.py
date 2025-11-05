@@ -58,8 +58,9 @@ async def run_massive_ws(
     while True:
         sender_task: asyncio.Task | None = None
         try:
-            async with websockets.connect(url, extra_headers={"Authorization": f"Bearer {api_key}"}, ping_interval=None) as ws:
+            async with websockets.connect(url, ping_interval=None) as ws:
                 logger.info("massive-ws-connected", extra={"url": url})
+                await ws.send(json.dumps({"action": "auth", "params": api_key}))
                 # Re-hydrate subscriptions on every connect
                 for params in snapshot_subscriptions():
                     await ws.send(json.dumps({"action": "subscribe", "params": params}))
