@@ -63,6 +63,10 @@ export function useLiveTiles(): UseLiveTilesResult {
 
   useEffect(() => {
     const socket = connectWS((payload) => {
+      if (payload?.type === "heartbeat") {
+        heartbeatRef.current = Date.now();
+        return;
+      }
       if (payload?.type !== "tile" || typeof payload.data !== "object" || !payload.data) return;
       const tile = payload.data as Record<string, any>;
       if (!tile.symbol) return;
